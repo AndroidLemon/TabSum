@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "TabSum: Inactive Tab Summarizer & Knowledge Wiki",
+  "version": "1.0.0",
+  "description": "Automatically summarizes neglected tabs and archives them into an in-browser knowledge wiki with 1-click restore.",
+  "icons": {
+    "16": "src/assets/icons/icon-16.png",
+    "48": "src/assets/icons/icon-48.png",
+    "128": "src/assets/icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "TabSum: Knowledge Hub",
+    "default_icon": {
+      "16": "src/assets/icons/icon-16.png",
+      "48": "src/assets/icons/icon-48.png",
+      "128": "src/assets/icons/icon-128.png"
+    }
+  },
+  "background": {
+    "service_worker": "src/background/service-worker.js"
+  },
+  "side_panel": {
+    "default_path": "src/sidepanel/index.html"
+  },
+  "options_ui": {
+    "page": "src/options/index.html",
+    "open_in_tab": true
+  },
+  "permissions": [
+    "tabs",
+    "storage",
+    "alarms",
+    "idle",
+    "scripting",
+    "sidePanel",
+    "unlimitedStorage",
+    "notifications"
+  ],
+  "optional_host_permissions": [
+    "<all_urls>"
+  ]
+}

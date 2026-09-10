@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TabSum Settings & Permissions</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="options-container">
+    <header class="options-header">
+      <div class="brand">
+        <img src="../assets/icons/icon-48.png" alt="TabSum" class="brand-icon">
+        <div>
+          <h1>TabSum Settings</h1>
+          <p class="subtitle">Customize tab inactivity, privacy, and summarization rules.</p>
+        </div>
+      </div>
+      <button id="open-wiki-link-btn" class="secondary-btn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+        Open Wiki Dashboard
+      </button>
+    </header>
+
+    <!-- Permission Onboarding Card -->
+    <section class="settings-card permission-card" id="permission-card">
+      <div class="card-icon-area">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+      </div>
+      <div class="card-content">
+        <h3>Page Content Extraction Access</h3>
+        <p>To summarize background tabs automatically, TabSum needs permission to extract reading text from web pages. Your content is parsed directly on your device and never uploaded to external servers without your consent.</p>
+        <div class="permission-status" id="permission-status">Checking permission status...</div>
+      </div>
+      <button id="grant-perm-btn" class="primary-btn">Enable Extraction</button>
+    </section>
+
+    <!-- Inactivity & Archival Mode -->
+    <section class="settings-card">
+      <h3>Tab Inactivity & Behavior</h3>
+      
+      <div class="setting-row">
+        <div class="setting-label-group">
+          <label for="timeout-select">Inactivity Threshold</label>
+          <span class="setting-desc">How long a tab can remain untouched before TabSum archives it.</span>
+        </div>
+        <select id="timeout-select" class="form-select">
+          <option value="15">15 minutes</option>
+          <option value="30">30 minutes</option>
+          <option value="60">1 hour (Default)</option>
+          <option value="120">2 hours</option>
+          <option value="240">4 hours</option>
+          <option value="1440">24 hours (1 day)</option>
+          <option value="1">1 minute (Testing mode)</option>
+        </select>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-label-group">
+          <label>Archival Action</label>
+          <span class="setting-desc">Choose how TabSum cleans up your tabs once summarized.</span>
+        </div>
+        <div class="radio-group">
+          <label class="radio-option">
+            <input type="radio" name="archiveMode" value="discard" id="mode-discard">
+            <div>
+              <strong>Soft Suspend (Recommended)</strong>
+              <span>Frees 95% of memory while keeping the tab visible in your tab bar.</span>
+            </div>
+          </label>
+          <label class="radio-option">
+            <input type="radio" name="archiveMode" value="close" id="mode-close">
+            <div>
+              <strong>Auto-Close</strong>
+              <span>Closes the tab completely to eliminate clutter. Tab can be restored anytime with 1 click.</span>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-label-group">
+          <label for="notif-toggle">Archival Notifications</label>
+          <span class="setting-desc">Show a subtle system notification when a tab is summarized and closed.</span>
+        </div>
+        <input type="checkbox" id="notif-toggle" class="form-toggle">
+      </div>
+    </section>
+
+    <!-- AI Summarization Provider -->
+    <section class="settings-card">
+      <h3>AI Summarization Engine</h3>
+
+      <div class="setting-row">
+        <div class="setting-label-group">
+          <label for="ai-provider-select">Provider</label>
+          <span class="setting-desc">Select which engine powers structured distillation and topic extraction.</span>
+        </div>
+        <select id="ai-provider-select" class="form-select">
+          <option value="auto">Auto (Best Available — Local First)</option>
+          <option value="prompt-api">Chrome Built-in Prompt API (Gemini Nano)</option>
+          <option value="heuristic">Algorithmic Heuristic (Instant, 100% Offline)</option>
+          <option value="gemini-api">Google Gemini Flash (Cloud BYOK)</option>
+        </select>
+      </div>
+
+      <div class="setting-row hidden" id="api-key-row">
+        <div class="setting-label-group">
+          <label for="gemini-api-key">Gemini API Key</label>
+          <span class="setting-desc">Stored locally on your device in secure extension storage.</span>
+        </div>
+        <input type="password" id="gemini-api-key" placeholder="AIzaSy..." class="form-input">
+      </div>
+    </section>
+
+    <!-- Excluded Domains -->
+    <section class="settings-card">
+      <h3>Domain Whitelist (Never Archive)</h3>
+      <p class="section-desc">Tabs from these domains will NEVER be automatically summarized or closed.</p>
+      
+      <div class="domain-input-row">
+        <input type="text" id="new-domain-input" placeholder="e.g. figma.com, notion.so" class="form-input">
+        <button id="add-domain-btn" class="secondary-btn">Add Domain</button>
+      </div>
+
+      <div id="domain-chips" class="domain-chips-container">
+        <!-- Chips injected via JS -->
+      </div>
+    </section>
+
+    <!-- Data Management -->
+    <section class="settings-card danger-zone">
+      <h3>Data & Backups</h3>
+      <div class="setting-row">
+        <div>
+          <strong>Export Knowledge Wiki</strong>
+          <p class="setting-desc">Download all your saved summaries and notes.</p>
+        </div>
+        <div class="btn-group">
+          <button id="export-json-btn" class="secondary-btn">JSON</button>
+          <button id="export-md-btn" class="secondary-btn">Markdown</button>
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div>
+          <strong>Clear All Stored Summaries</strong>
+          <p class="setting-desc">Erase all archived tabs and history from your local browser.</p>
+        </div>
+        <button id="clear-data-btn" class="danger-btn">Clear Database</button>
+      </div>
+    </section>
+
+    <!-- Save Feedback -->
+    <div id="save-toast" class="toast hidden">Settings saved!</div>
+  </div>
+
+  <script type="module" src="options.js"></script>
+</body>
+</html>
