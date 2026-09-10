@@ -90,7 +90,10 @@ function setupListeners() {
   // Add Domain
   document.getElementById('add-domain-btn').addEventListener('click', async () => {
     const input = document.getElementById('new-domain-input');
-    const domain = input.value.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    const domain = input.value.trim().toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .replace(/^www\./, '')
+      .replace(/\/.*$/, '');
     if (!domain) return;
 
     if (!currentSettings.excludedDomains) currentSettings.excludedDomains = [];

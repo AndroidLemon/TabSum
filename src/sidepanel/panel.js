@@ -7,12 +7,45 @@ import { getArchivedTabs, getAllTags, getStats, deleteArchivedTab, updateTabStat
 let activeTagFilter = '';
 let currentSearchQuery = '';
 
+let searchDebounceTimer = null;
+
 document.addEventListener('DOMContentLoaded', async () => {
   setupEventListeners();
+  await checkPermissions();
   await refreshDashboard();
 });
 
+async function checkPermissions() {
+  const permBanner = document.getElementById('perm-banner');
+  try {
+    const hasPermission = await chrome.permissions.contains({ origins: ['<all_urls>'] });
+    if (!hasPermission) {
+      permBanner.classList.remove('hidden');
+    } else {
+      permBanner.classList.add('hidden');
+    }
+  } catch (err) {
+    console.debug('Permission check error:', err);
+  }
+}
+
 function setupEventListeners() {
+  // Permission banner grant button
+  const enablePermBtn = document.getElementById('enable-perm-btn');
+  if (enablePermBtn) {
+    enablePermBtn.addEventListener('click', async () => {
+      try {
+        const granted = await chrome.permissions.request({ origins: ['<all_urls>'] });
+        if (granted) {
+          document.getElementById('perm-banner').classList.add('hidden');
+          showToast('Extraction permissions enabled!');
+        }
+      } catch (err) {
+        console.error('Permission request failed:', err);
+      }
+    });
+  }
+
   // Open full wiki dashboard
   document.getElementById('open-wiki-btn').addEventListener('click', () => {
     chrome.tabs.create({ url: chrome.runtime.getURL('src/wiki/index.html') });
@@ -59,11 +92,14 @@ function setupEventListeners() {
     }
   });
 
-  // Search input
+  // Search input with 200ms debounce
   const searchInput = document.getElementById('search-input');
-  searchInput.addEventListener('input', async (e) => {
-    currentSearchQuery = e.target.value;
-    await renderFeed();
+  searchInput.addEventListener('input', (e) => {
+    clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = setTimeout(async () => {
+      currentSearchQuery = e.target.value;
+      await renderFeed();
+    }, 200);
   });
 }
 

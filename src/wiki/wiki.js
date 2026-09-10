@@ -18,17 +18,22 @@ let currentTagFilter = '';
 let currentDomainFilter = '';
 let searchQuery = '';
 
+let searchDebounceTimer = null;
+
 document.addEventListener('DOMContentLoaded', async () => {
   setupEventListeners();
   await refreshWiki();
 });
 
 function setupEventListeners() {
-  // Search bar
+  // Search bar with 200ms debounce
   const searchInput = document.getElementById('wiki-search');
-  searchInput.addEventListener('input', async (e) => {
-    searchQuery = e.target.value;
-    await renderGrid();
+  searchInput.addEventListener('input', (e) => {
+    clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = setTimeout(async () => {
+      searchQuery = e.target.value;
+      await renderGrid();
+    }, 200);
   });
 
   // Timeline navigation
@@ -274,7 +279,13 @@ function openReaderModal(tab) {
   document.getElementById('modal-title').textContent = tab.title;
   const sourceLink = document.getElementById('modal-source-link');
   sourceLink.textContent = tab.url;
-  sourceLink.href = tab.url;
+
+  // Strict scheme validation: only set href if http: or https:
+  if (/^https?:\/\//i.test(tab.url)) {
+    sourceLink.href = tab.url;
+  } else {
+    sourceLink.removeAttribute('href');
+  }
 
   const summaryBox = document.getElementById('modal-summary-box');
   summaryBox.innerHTML = `

@@ -35,35 +35,47 @@ chrome.runtime.onStartup.addListener(async () => {
 });
 
 /**
- * Tab Activity Tracking in chrome.storage.session
+ * Tab Activity Tracking in chrome.storage.session (Serialized via mutex)
  */
+let storageLock = Promise.resolve();
+function withStorageLock(fn) {
+  storageLock = storageLock.then(fn).catch(err => console.error('[TabSum] Storage lock error:', err));
+  return storageLock;
+}
+
 async function getTimestamps() {
   const data = await chrome.storage.session.get('tabTimestamps');
   return data.tabTimestamps || {};
 }
 
 async function setTimestamp(tabId, timestamp = Date.now()) {
-  const timestamps = await getTimestamps();
-  timestamps[tabId] = timestamp;
-  await chrome.storage.session.set({ tabTimestamps: timestamps });
+  return withStorageLock(async () => {
+    const timestamps = await getTimestamps();
+    timestamps[tabId] = timestamp;
+    await chrome.storage.session.set({ tabTimestamps: timestamps });
+  });
 }
 
 async function removeTimestamp(tabId) {
-  const timestamps = await getTimestamps();
-  delete timestamps[tabId];
-  await chrome.storage.session.set({ tabTimestamps: timestamps });
+  return withStorageLock(async () => {
+    const timestamps = await getTimestamps();
+    delete timestamps[tabId];
+    await chrome.storage.session.set({ tabTimestamps: timestamps });
+  });
 }
 
 async function initializeTabTimestamps() {
-  const tabs = await chrome.tabs.query({});
-  const timestamps = await getTimestamps();
-  const now = Date.now();
-  for (const tab of tabs) {
-    if (!timestamps[tab.id]) {
-      timestamps[tab.id] = now;
+  return withStorageLock(async () => {
+    const tabs = await chrome.tabs.query({});
+    const timestamps = await getTimestamps();
+    const now = Date.now();
+    for (const tab of tabs) {
+      if (!timestamps[tab.id]) {
+        timestamps[tab.id] = now;
+      }
     }
-  }
-  await chrome.storage.session.set({ tabTimestamps: timestamps });
+    await chrome.storage.session.set({ tabTimestamps: timestamps });
+  });
 }
 
 // Track tab activation
@@ -76,6 +88,18 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
   if (changeInfo.status === 'complete') {
     await setTimestamp(tabId, Date.now());
   }
+});
+
+// Track tab replacement (prerendering / session restore)
+chrome.tabs.onReplaced.addListener(async (addedTabId, removedTabId) => {
+  return withStorageLock(async () => {
+    const timestamps = await getTimestamps();
+    if (timestamps[removedTabId]) {
+      timestamps[addedTabId] = timestamps[removedTabId];
+      delete timestamps[removedTabId];
+      await chrome.storage.session.set({ tabTimestamps: timestamps });
+    }
+  });
 });
 
 // Track window focus change
@@ -96,9 +120,18 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   await removeTimestamp(tabId);
 });
 
+function isScriptableUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  if (/^(chrome|chrome-extension|about|edge|brave|view-source|data|file):/i.test(url)) return false;
+  if (/chromewebstore\.google\.com|chrome\.google\.com\/webstore/i.test(url)) return false;
+  return true;
+}
+
 /**
- * Inactivity Sweep via chrome.alarms
+ * Inactivity Sweep via chrome.alarms (Guarded against concurrency)
  */
+let isSweeping = false;
+
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== ALARM_NAME) return;
 
@@ -115,48 +148,62 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 });
 
 async function performInactivitySweep() {
-  const settings = await getSettings();
-  const timeoutMs = (settings.timeoutMinutes || 60) * 60 * 1000;
-  const timestamps = await getTimestamps();
-  const now = Date.now();
+  if (isSweeping) return;
+  isSweeping = true;
 
-  const allTabs = await chrome.tabs.query({});
-  const excludedDomains = (settings.excludedDomains || []).map(d => d.toLowerCase());
-
-  for (const tab of allTabs) {
-    // Safety Gates:
-    // 1. Never touch active tab in any window
-    if (tab.active) continue;
-
-    // 2. Never touch pinned tabs
-    if (tab.pinned) continue;
-
-    // 3. Never touch tabs playing audio
-    if (tab.audible) continue;
-
-    // 4. Never touch already discarded tabs
-    if (tab.discarded) continue;
-
-    // 5. Internal URLs
-    if (!tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('about:')) {
-      continue;
+  try {
+    // Check permission first: avoid silent script injection failures
+    const hasPermission = await chrome.permissions.contains({ origins: ['<all_urls>'] });
+    if (!hasPermission) {
+      console.log('[TabSum] Inactivity sweep skipped: <all_urls> permission not yet granted by user.');
+      return;
     }
 
-    // 6. Excluded domain check
-    const domain = extractDomain(tab.url).toLowerCase();
-    if (excludedDomains.some(ex => domain === ex || domain.endsWith('.' + ex))) {
-      continue;
-    }
+    const settings = await getSettings();
+    const timeoutMs = (settings.timeoutMinutes || 60) * 60 * 1000;
+    const timestamps = await getTimestamps();
+    const now = Date.now();
 
-    // 7. Check staleness threshold
-    const lastActive = timestamps[tab.id] || now;
-    const idleDuration = now - lastActive;
-    if (idleDuration < timeoutMs) {
-      continue;
-    }
+    const allTabs = await chrome.tabs.query({});
+    const excludedDomains = (settings.excludedDomains || []).map(d => d.toLowerCase());
 
-    // Tab is eligible! Process archival
-    await processTabArchival(tab, settings, lastActive);
+    for (const tab of allTabs) {
+      // Safety Gates:
+      // 1. Never touch active tab in any window
+      if (tab.active) continue;
+
+      // 2. Never touch pinned tabs
+      if (tab.pinned) continue;
+
+      // 3. Never touch tabs playing audio
+      if (tab.audible) continue;
+
+      // 4. Never touch already discarded tabs
+      if (tab.discarded) continue;
+
+      // 5. Check if URL is scriptable
+      if (!isScriptableUrl(tab.url)) {
+        continue;
+      }
+
+      // 6. Excluded domain check
+      const domain = extractDomain(tab.url).toLowerCase();
+      if (excludedDomains.some(ex => domain === ex || domain.endsWith('.' + ex))) {
+        continue;
+      }
+
+      // 7. Check staleness threshold
+      const lastActive = timestamps[tab.id] || now;
+      const idleDuration = now - lastActive;
+      if (idleDuration < timeoutMs) {
+        continue;
+      }
+
+      // Tab is eligible! Process archival
+      await processTabArchival(tab, settings, lastActive);
+    }
+  } finally {
+    isSweeping = false;
   }
 }
 
@@ -202,7 +249,7 @@ async function processTabArchival(tab, settings, lastActiveTime) {
       meta: extracted.meta
     });
 
-    // 5. TOCTOU Re-Check: Did user switch into tab while we were summarizing?
+    // 5. TOCTOU Re-Check: Did user switch into tab or play audio while we were summarizing?
     let currentTab;
     try {
       currentTab = await chrome.tabs.get(tab.id);
@@ -211,8 +258,8 @@ async function processTabArchival(tab, settings, lastActiveTime) {
       return;
     }
 
-    if (!currentTab || currentTab.active) {
-      console.log(`[TabSum] Tab ${tab.id} became active during processing. Aborting closure.`);
+    if (!currentTab || currentTab.active || currentTab.audible) {
+      console.log(`[TabSum] Tab ${tab.id} became active or audible during processing. Aborting closure.`);
       return;
     }
 
@@ -244,6 +291,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
         if (!activeTab || !activeTab.id) {
           sendResponse({ success: false, error: 'No active tab found' });
+          return;
+        }
+
+        if (!isScriptableUrl(activeTab.url)) {
+          sendResponse({ success: false, error: 'Cannot extract content from internal browser or extension store pages.' });
           return;
         }
 
@@ -333,7 +385,7 @@ function showArchivedNotification(title) {
   try {
     chrome.notifications.create({
       type: 'basic',
-      iconUrl: 'src/assets/icons/icon-128.png',
+      iconUrl: chrome.runtime.getURL('src/assets/icons/icon-128.png'),
       title: 'Tab Archived to Wiki',
       message: `"${title.slice(0, 50)}..." summarized and saved to your knowledge base.`,
       silent: true

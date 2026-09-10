@@ -197,10 +197,10 @@ async function summarizeWithChromePromptAPI({ title, cleanText }) {
 
   if (!session) return null;
 
-  const prompt = `Title: ${title}\n\nArticle excerpt:\n${cleanText.slice(0, 3000)}\n\nProvide the summary JSON:`;
-  const response = await session.prompt(prompt);
-
   try {
+    const prompt = `Title: ${title}\n\nArticle excerpt:\n${cleanText.slice(0, 3000)}\n\nProvide the summary JSON:`;
+    const response = await session.prompt(prompt);
+
     const jsonMatch = response.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
@@ -212,8 +212,12 @@ async function summarizeWithChromePromptAPI({ title, cleanText }) {
         };
       }
     }
-  } catch {
-    // If JSON parsing fails, return formatted text
+  } catch (err) {
+    console.debug('Chrome Prompt API execution error:', err);
+  } finally {
+    if (session && typeof session.destroy === 'function') {
+      try { session.destroy(); } catch {}
+    }
   }
 
   return null;
@@ -223,7 +227,8 @@ async function summarizeWithChromePromptAPI({ title, cleanText }) {
  * Tier 2: Cloud Gemini API (Optional BYOK)
  */
 async function summarizeWithGeminiAPI({ title, cleanText }, apiKey) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+  // Use header-based key delivery instead of URL query parameter to avoid logging exposure
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
   const prompt = `Summarize this web page into structured JSON with fields:
   "tldr": 1-2 sentence core message
   "bullets": array of 3 distinct key takeaways
@@ -235,7 +240,10 @@ async function summarizeWithGeminiAPI({ title, cleanText }, apiKey) {
 
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey
+    },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: {

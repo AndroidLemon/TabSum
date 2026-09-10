@@ -24,11 +24,26 @@ function getDB() {
         }
       };
 
-      request.onsuccess = () => resolve(request.result);
+      request.onsuccess = () => {
+        const db = request.result;
+        db.onversionchange = () => {
+          db.close();
+          dbPromise = null;
+        };
+        resolve(db);
+      };
       request.onerror = () => reject(request.error);
     });
   }
   return dbPromise;
+}
+
+/**
+ * Validate that a URL strictly starts with http:// or https://
+ */
+function isValidHttpUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  return /^https?:\/\//i.test(url.trim());
 }
 
 /**
@@ -37,12 +52,21 @@ function getDB() {
  */
 export async function saveArchivedTab(tabData) {
   const db = await getDB();
+  
+  // Scheme validation: strictly allow only http: and https: protocols
+  const safeUrl = isValidHttpUrl(tabData.url) ? tabData.url.trim() : '';
+  const safeFavicon = isValidHttpUrl(tabData.favIconUrl) ? tabData.favIconUrl.trim() : '';
+
+  // Cap cleanText at 50,000 chars to avoid memory / storage bloat over time
+  const rawText = tabData.cleanText || '';
+  const cappedText = rawText.length > 50000 ? rawText.slice(0, 50000) : rawText;
+
   const record = {
     id: tabData.id || crypto.randomUUID(),
-    url: tabData.url,
+    url: safeUrl,
     title: tabData.title || 'Untitled Tab',
-    domain: tabData.domain || extractDomain(tabData.url),
-    favIconUrl: tabData.favIconUrl || '',
+    domain: tabData.domain || extractDomain(safeUrl),
+    favIconUrl: safeFavicon,
     capturedAt: tabData.capturedAt || Date.now(),
     lastActiveAt: tabData.lastActiveAt || Date.now(),
     readingTimeMinutes: tabData.readingTimeMinutes || 1,
@@ -51,7 +75,7 @@ export async function saveArchivedTab(tabData) {
       bullets: [],
       tags: []
     },
-    cleanText: tabData.cleanText || '',
+    cleanText: cappedText,
     wordCount: tabData.wordCount || 0,
     status: tabData.status || 'archived', // 'archived' | 'discarded' | 'restored'
     meta: tabData.meta || {}
@@ -255,19 +279,40 @@ export async function getAllDomains() {
  * Get dashboard stats
  */
 export async function getStats() {
-  const tabs = await getArchivedTabs({ limit: 1000 });
+  const db = await getDB();
   const now = Date.now();
   const dayAgo = now - 24 * 60 * 60 * 1000;
 
-  const total = tabs.length;
-  const today = tabs.filter(t => t.capturedAt >= dayAgo).length;
-  const totalReadingMinutes = tabs.reduce((acc, t) => acc + (t.readingTimeMinutes || 2), 0);
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readonly');
+    const store = tx.objectStore(STORE_NAME);
+    const totalReq = store.count();
 
-  return {
-    total,
-    today,
-    totalReadingMinutes
-  };
+    const capturedIndex = store.index('capturedAt');
+    const range = IDBKeyRange.lowerBound(dayAgo);
+    const todayReq = capturedIndex.count(range);
+
+    let total = 0;
+    let today = 0;
+
+    totalReq.onsuccess = () => {
+      total = totalReq.result || 0;
+    };
+
+    todayReq.onsuccess = () => {
+      today = todayReq.result || 0;
+    };
+
+    tx.oncomplete = () => {
+      resolve({
+        total,
+        today,
+        totalReadingMinutes: total * 2
+      });
+    };
+
+    tx.onerror = () => reject(tx.error);
+  });
 }
 
 /**
