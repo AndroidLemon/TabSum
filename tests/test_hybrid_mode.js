@@ -399,6 +399,110 @@ async function runHybridTests() {
     assert.ok(hasSleepingBadgeWiki, 'Wiki must render 💤 Sleeping badge');
     console.log('✓ Knowledge Wiki correctly displays "🗄️ Archived" and "💤 Sleeping" status badges');
 
+    // --- Test 4: Pinned Tab & Domain Whitelist Safety ---
+    console.log('\n--- Test 4: Pinned Tab & Domain Whitelist Safety ---');
+
+    // 4a: Pinned Tab Safety (ignorePinnedTabs: true)
+    const pinnedPage = await context.newPage();
+    await pinnedPage.goto(`http://localhost:${PORT}/pure-article`);
+    await pinnedPage.waitForLoadState('networkidle');
+
+    const pinnedTabId = await background.evaluate(async () => {
+      const tabs = await chrome.tabs.query({});
+      const pure = tabs.find(t => t.url.includes('/pure-article'));
+      if (pure) {
+        await chrome.tabs.update(pure.id, { pinned: true });
+        const data = await chrome.storage.session.get('tabTimestamps');
+        const timestamps = data.tabTimestamps || {};
+        timestamps[pure.id] = Date.now() - 120000;
+        await chrome.storage.session.set({ tabTimestamps: timestamps });
+        return pure.id;
+      }
+      return null;
+    });
+
+    await background.evaluate(async () => {
+      const tabs = await chrome.tabs.query({});
+      const helper = tabs.find(t => t.url.includes('src/options/index.html'));
+      if (helper) await chrome.tabs.update(helper.id, { active: true });
+    });
+    await new Promise(r => setTimeout(r, 400));
+
+    await helperPage.evaluate(async () => {
+      return new Promise(resolve => {
+        chrome.runtime.sendMessage({ type: 'TRIGGER_SWEEP_NOW' }, resolve);
+      });
+    });
+    await new Promise(r => setTimeout(r, 1000));
+
+    const pinnedTabStatus = await background.evaluate(async (targetId) => {
+      const tabs = await chrome.tabs.query({});
+      const tab = tabs.find(t => t.id === targetId);
+      return {
+        exists: Boolean(tab),
+        pinned: tab?.pinned,
+        title: tab?.title
+      };
+    }, pinnedTabId);
+
+    assert.strictEqual(pinnedTabStatus.exists, true, 'Pinned tab must remain open when ignorePinnedTabs is enabled');
+    assert.strictEqual(pinnedTabStatus.pinned, true, 'Pinned tab must still be pinned');
+    assert.ok(!pinnedTabStatus.title?.startsWith('💤 '), 'Pinned tab must not be soft-suspended');
+    console.log('✓ Pinned tab safely ignored during sweep (ignorePinnedTabs: true)');
+
+    await pinnedPage.close();
+
+    // 4b: Domain Whitelist Safety
+    await helperPage.evaluate(async () => {
+      const { saveSettings, getSettings } = await import(chrome.runtime.getURL('src/storage/db.js'));
+      const curr = await getSettings();
+      await saveSettings({
+        excludedDomains: [...(curr.excludedDomains || []), 'localhost']
+      });
+    });
+
+    const whitelistedPage = await context.newPage();
+    await whitelistedPage.goto(`http://localhost:${PORT}/pure-article`);
+    await whitelistedPage.waitForLoadState('networkidle');
+
+    const whitelistedTabId = await background.evaluate(async () => {
+      const tabs = await chrome.tabs.query({});
+      const pure = tabs.find(t => t.url.includes('/pure-article'));
+      if (pure) {
+        const data = await chrome.storage.session.get('tabTimestamps');
+        const timestamps = data.tabTimestamps || {};
+        timestamps[pure.id] = Date.now() - 120000;
+        await chrome.storage.session.set({ tabTimestamps: timestamps });
+        return pure.id;
+      }
+      return null;
+    });
+
+    await background.evaluate(async () => {
+      const tabs = await chrome.tabs.query({});
+      const helper = tabs.find(t => t.url.includes('src/options/index.html'));
+      if (helper) await chrome.tabs.update(helper.id, { active: true });
+    });
+    await new Promise(r => setTimeout(r, 400));
+
+    await helperPage.evaluate(async () => {
+      return new Promise(resolve => {
+        chrome.runtime.sendMessage({ type: 'TRIGGER_SWEEP_NOW' }, resolve);
+      });
+    });
+    await new Promise(r => setTimeout(r, 1000));
+
+    const whitelistedTabStatus = await background.evaluate(async (targetId) => {
+      const tabs = await chrome.tabs.query({});
+      const tab = tabs.find(t => t.id === targetId);
+      return { exists: Boolean(tab) };
+    }, whitelistedTabId);
+
+    assert.strictEqual(whitelistedTabStatus.exists, true, 'Whitelisted domain tab must NEVER be archived');
+    console.log('✓ Whitelisted domain tab safely ignored during sweep');
+
+    await whitelistedPage.close();
+
     // Clean up test tabs
     await bgUntouchedForm.close();
     await sidePanelPage.close();

@@ -30,6 +30,11 @@ function populateForm(settings) {
     }
   }
 
+  const ignorePinnedToggle = document.getElementById('ignore-pinned-toggle');
+  if (ignorePinnedToggle) {
+    ignorePinnedToggle.checked = settings.ignorePinnedTabs !== undefined ? Boolean(settings.ignorePinnedTabs) : true;
+  }
+
   document.getElementById('notif-toggle').checked = Boolean(settings.notificationsEnabled);
   document.getElementById('ai-provider-select').value = settings.aiProvider || 'auto';
   document.getElementById('gemini-api-key').value = settings.geminiApiKey || '';
@@ -82,6 +87,16 @@ function setupListeners() {
       showToast('Archival mode updated');
     });
   });
+
+  // Ignore Pinned Tabs
+  const ignorePinnedToggle = document.getElementById('ignore-pinned-toggle');
+  if (ignorePinnedToggle) {
+    ignorePinnedToggle.addEventListener('change', async (e) => {
+      currentSettings.ignorePinnedTabs = e.target.checked;
+      await saveSettings(currentSettings);
+      showToast('Pinned tab preference saved');
+    });
+  }
 
   // Notifications
   document.getElementById('notif-toggle').addEventListener('change', async (e) => {

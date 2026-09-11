@@ -436,6 +436,7 @@ export async function exportTabs(format = 'json') {
 export const DEFAULT_SETTINGS = {
   timeoutMinutes: 60,
   archiveMode: 'hybrid', // 'hybrid' (smart adaptive) | 'discard' (soft suspension) | 'close' (auto-close)
+  ignorePinnedTabs: true, // Never archive or suspend pinned tabs unless explicitly allowed
   aiProvider: 'auto',     // 'auto' | 'prompt-api' | 'heuristic' | 'gemini-api'
   geminiApiKey: '',
   excludedDomains: [

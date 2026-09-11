@@ -169,8 +169,8 @@ async function performInactivitySweep() {
       // 1. Never touch active tab in any window
       if (tab.active) continue;
 
-      // 2. Never touch pinned tabs
-      if (tab.pinned) continue;
+      // 2. Never touch pinned tabs (if ignorePinnedTabs is enabled, default: true)
+      if (settings.ignorePinnedTabs !== false && tab.pinned) continue;
 
       // 3. Never touch tabs playing audio
       if (tab.audible) continue;
