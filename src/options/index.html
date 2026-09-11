@@ -62,17 +62,24 @@
         </div>
         <div class="radio-group">
           <label class="radio-option">
+            <input type="radio" name="archiveMode" value="hybrid" id="mode-hybrid">
+            <div>
+              <strong>Smart Hybrid [Recommended]</strong>
+              <span>Auto-closes pure reading articles into the Wiki; safely soft-suspends tabs with forms, interactive apps, or stateful URLs.</span>
+            </div>
+          </label>
+          <label class="radio-option">
             <input type="radio" name="archiveMode" value="discard" id="mode-discard">
             <div>
-              <strong>Soft Suspend (Recommended)</strong>
-              <span>Frees 95% of memory while keeping the tab visible in your tab bar.</span>
+              <strong>Soft Suspend All</strong>
+              <span>Never closes tabs. Discards all idle tabs to free 95% RAM while keeping them visible in the tab bar.</span>
             </div>
           </label>
           <label class="radio-option">
             <input type="radio" name="archiveMode" value="close" id="mode-close">
             <div>
-              <strong>Auto-Close</strong>
-              <span>Closes the tab completely to eliminate clutter. Tab can be restored anytime with 1 click.</span>
+              <strong>Auto-Close All</strong>
+              <span>Closes every idle tab (unless dirty/unsaved). One-click restore available from Side Panel or Wiki.</span>
             </div>
           </label>
         </div>

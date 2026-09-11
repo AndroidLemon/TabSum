@@ -84,6 +84,8 @@ export async function saveArchivedTab(tabData) {
         cleanText: cappedText,
         wordCount: tabData.wordCount || 0,
         status: tabData.status || 'pending', // 'pending' | 'discarded' | 'archived' | 'aborted' | 'restored'
+        closureTier: tabData.closureTier || 'suspend_only',
+        closureReason: tabData.closureReason || '',
         isFavorite: Boolean(tabData.isFavorite),
         pinned: Boolean(tabData.pinned),
         meta: tabData.meta || {}
@@ -433,7 +435,7 @@ export async function exportTabs(format = 'json') {
  */
 export const DEFAULT_SETTINGS = {
   timeoutMinutes: 60,
-  archiveMode: 'discard', // 'discard' (soft suspension, keeps tab header) or 'close' (cleans tab bar)
+  archiveMode: 'hybrid', // 'hybrid' (smart adaptive) | 'discard' (soft suspension) | 'close' (auto-close)
   aiProvider: 'auto',     // 'auto' | 'prompt-api' | 'heuristic' | 'gemini-api'
   geminiApiKey: '',
   excludedDomains: [

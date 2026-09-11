@@ -159,10 +159,75 @@
   // Low-confidence check: if text is under 150 words, preserve as quick bookmark without bad summary
   const isLowConfidence = wordCount < 150;
 
+  // 4. Tiered Hybrid Safety Classifier: Distinguish 'safe_to_close' vs 'suspend_only'
+  function classifyClosureSafety(cleanText, wordCount) {
+    // Check 1: Any interactive form controls present (even if clean/untyped)
+    // Strictly exclude site-wide search boxes from blocking closure
+    const forms = queryAllDeep('form').filter(f => f.getAttribute('role') !== 'search');
+    const inputs = queryAllDeep('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"])')
+      .filter(i => i.getAttribute('role') !== 'searchbox' && i.name !== 'search' && i.name !== 'q');
+    const selects = queryAllDeep('select');
+    const textareas = queryAllDeep('textarea');
+
+    if (forms.length > 0 || inputs.length > 0 || selects.length > 0 || textareas.length > 0) {
+      return {
+        tier: 'suspend_only',
+        reason: 'Contains form or interactive input controls'
+      };
+    }
+
+    // Check 2: Rich interactive application containers or modals
+    const appContainers = queryAllDeep('[role="dialog"], [role="application"], .monaco-editor, .ProseMirror, .ql-editor');
+    if (appContainers.length > 0) {
+      return {
+        tier: 'suspend_only',
+        reason: 'Interactive application container or dialog detected'
+      };
+    }
+
+    // Check 3: Stateful URL path or client-side hash routing
+    const pathname = window.location.pathname.toLowerCase();
+    const hash = window.location.hash.toLowerCase();
+    const search = window.location.search.toLowerCase();
+
+    if (hash.length > 3 || pathname.includes('checkout') || pathname.includes('cart') || pathname.includes('account')) {
+      return {
+        tier: 'suspend_only',
+        reason: 'Stateful URL path or client-side hash route'
+      };
+    }
+
+    // Check 4: Complex multi-param search result listings (preserve user query state)
+    if (search.includes('&') && (search.includes('q=') || search.includes('query=') || search.includes('filter='))) {
+      return {
+        tier: 'suspend_only',
+        reason: 'Complex search/filter query state'
+      };
+    }
+
+    // Check 5: Content density and readability confidence
+    if (wordCount < 120) {
+      return {
+        tier: 'suspend_only',
+        reason: 'Short or low-confidence content'
+      };
+    }
+
+    // High-confidence, stateless reading material
+    return {
+      tier: 'safe_to_close',
+      reason: 'Pure stateless reading article'
+    };
+  }
+
+  const safetyClassification = classifyClosureSafety(cleanText, wordCount);
+
   return {
     success: true,
     isDirty: false,
     isLowConfidence,
+    closureTier: safetyClassification.tier,
+    closureReason: safetyClassification.reason,
     url: window.location.href,
     title: cleanTitle,
     domain: window.location.hostname.replace(/^www\./, ''),

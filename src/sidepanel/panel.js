@@ -254,11 +254,17 @@ async function renderFeed() {
       .map(t => `<span class="card-tag">#${escapeHtml(t.replace(/^#/, ''))}</span>`)
       .join('');
 
+    const isSleeping = tab.status === 'discarded';
+    const statusBadge = isSleeping
+      ? `<span class="badge-status sleeping" title="${escapeHtml(tab.closureReason || 'Sleeping tab (RAM suspended)')}">💤 Sleeping</span>`
+      : `<span class="badge-status archived" title="${escapeHtml(tab.closureReason || 'Archived to knowledge base')}">🗄️ Archived</span>`;
+
     card.innerHTML = `
       <div class="card-header">
         <div class="card-source">
           <img class="card-favicon" src="${escapeHtml(faviconSrc)}" onerror="this.style.display='none'">
           <span class="card-domain">${escapeHtml(tab.domain)}</span>
+          ${statusBadge}
         </div>
         <span class="card-time">${timeAgo}</span>
       </div>

@@ -19,8 +19,15 @@ function populateForm(settings) {
   
   if (settings.archiveMode === 'close') {
     document.getElementById('mode-close').checked = true;
-  } else {
+  } else if (settings.archiveMode === 'discard') {
     document.getElementById('mode-discard').checked = true;
+  } else {
+    const hybridRadio = document.getElementById('mode-hybrid');
+    if (hybridRadio) {
+      hybridRadio.checked = true;
+    } else {
+      document.getElementById('mode-discard').checked = true;
+    }
   }
 
   document.getElementById('notif-toggle').checked = Boolean(settings.notificationsEnabled);

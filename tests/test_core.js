@@ -46,7 +46,7 @@ console.log('✓ Heuristic summarizer passed');
 // Test 3: Settings Defaults
 console.log('Testing settings defaults...');
 assert.strictEqual(DEFAULT_SETTINGS.timeoutMinutes, 60);
-assert.strictEqual(DEFAULT_SETTINGS.archiveMode, 'discard');
+assert.strictEqual(DEFAULT_SETTINGS.archiveMode, 'hybrid');
 assert.strictEqual(DEFAULT_SETTINGS.maxStoredItems, 1000);
 assert.strictEqual(DEFAULT_SETTINGS.autoPruneEnabled, true);
 assert.ok(DEFAULT_SETTINGS.excludedDomains.includes('docs.google.com'));

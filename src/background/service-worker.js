@@ -186,8 +186,9 @@ async function performInactivitySweep() {
       // 6. Check host permission for this specific tab's origin
       if (!hasGlobalPermission) {
         try {
-          const originPattern = new URL(tab.url).origin + '/*';
-          const hasOrigin = await chrome.permissions.contains({ origins: [originPattern] });
+          const parsed = new URL(tab.url);
+          const hostPattern = `${parsed.protocol}//${parsed.hostname}/*`;
+          const hasOrigin = await chrome.permissions.contains({ origins: [hostPattern] });
           if (!hasOrigin) {
             continue;
           }
@@ -257,6 +258,8 @@ async function processTabArchival(tab, settings, lastActiveTime) {
       cleanText: extracted.cleanText || '',
       wordCount: extracted.wordCount || 0,
       status: 'pending',
+      closureTier: extracted.closureTier || 'suspend_only',
+      closureReason: extracted.closureReason || '',
       meta: extracted.meta
     });
 
@@ -280,8 +283,18 @@ async function processTabArchival(tab, settings, lastActiveTime) {
       return;
     }
 
-    // 6. Action: Soft Discard or Auto-Close
+    // 6. Action: Soft Discard or Auto-Close based on Archive Mode
+    let shouldClose = false;
     if (settings.archiveMode === 'close') {
+      shouldClose = true;
+    } else if (settings.archiveMode === 'discard') {
+      shouldClose = false;
+    } else {
+      // 'hybrid' mode (default): close pure reading articles; suspend forms/SPAs/interactive tabs
+      shouldClose = extracted.closureTier === 'safe_to_close';
+    }
+
+    if (shouldClose) {
       await chrome.tabs.remove(tab.id);
       await removeTimestamp(tab.id);
       if (record?.id) {
@@ -362,6 +375,8 @@ async function archiveActiveTab(activeTab) {
     cleanText: extracted.cleanText || '',
     wordCount: extracted.wordCount || 0,
     status: 'archived',
+    closureTier: extracted.closureTier || 'safe_to_close',
+    closureReason: extracted.closureReason || 'Manual archive shortcut',
     meta: extracted.meta
   });
 

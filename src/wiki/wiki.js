@@ -272,11 +272,17 @@ async function renderGrid() {
       .map(t => `<span class="wiki-tag-pill" data-tag="${escapeHtml(t.replace(/^#/, ''))}">#${escapeHtml(t.replace(/^#/, ''))}</span>`)
       .join('');
 
+    const isSleeping = tab.status === 'discarded';
+    const statusBadge = isSleeping
+      ? `<span class="badge-status sleeping" title="${escapeHtml(tab.closureReason || 'Sleeping tab (RAM suspended)')}">💤 Sleeping</span>`
+      : `<span class="badge-status archived" title="${escapeHtml(tab.closureReason || 'Archived to knowledge base')}">🗄️ Archived</span>`;
+
     card.innerHTML = `
       <div class="card-top">
         <div class="card-site-info">
           <img class="site-icon" src="${escapeHtml(faviconSrc)}" onerror="this.style.display='none'">
           <span class="site-domain">${escapeHtml(tab.domain)}</span>
+          ${statusBadge}
         </div>
         <span class="card-reading-time">${tab.readingTimeMinutes || 1} min read</span>
       </div>

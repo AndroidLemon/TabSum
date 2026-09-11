@@ -1,7 +1,7 @@
 # TabSum Dogfooding & Browser Self-Test Report
 
-**Run Date**: 2026-09-11T05:09:27.884Z  
-**Execution Duration**: 3165ms  
+**Run Date**: 2026-09-11T05:37:55.102Z  
+**Execution Duration**: 2919ms  
 **Overall Result**: ✅ ALL SCENARIOS PASSED  
 
 ---
@@ -11,7 +11,7 @@
 | Scenario | Status | Details |
 | :--- | :---: | :--- |
 | **Onboarding & Options Setup** | `PASSED` | Verified |
-| **Content Extraction & Distillation** | `PASSED` | Latency: 51ms, Words: 93, Bullets: 2 |
+| **Content Extraction & Distillation** | `PASSED` | Latency: 48ms, Words: 93, Bullets: 2 |
 | **Zero-Loss Safety Guard** | `PASSED` | Unsaved textarea content detected |
 | **Wiki Search & 1-Click Restore** | `PASSED` | Verified |
 | **Live Background Sweep & Tab Closure** | `PASSED` | Verified |
