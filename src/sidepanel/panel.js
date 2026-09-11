@@ -233,15 +233,21 @@ async function renderFeed() {
     `;
 
     // Bind card events
-    card.querySelector('.card-title').addEventListener('click', () => {
-      chrome.tabs.create({ url: tab.url, active: true });
-    });
+    const handleRestore = async () => {
+      const res = await chrome.runtime.sendMessage({
+        type: 'RESTORE_TAB',
+        url: tab.url,
+        recordId: tab.id
+      });
+      if (res?.restoredInPlace) {
+        showToast('Focused existing sleeping tab!');
+      } else {
+        showToast('Tab reopened!');
+      }
+    };
 
-    card.querySelector('.restore-btn').addEventListener('click', async () => {
-      await chrome.tabs.create({ url: tab.url, active: true });
-      await updateTabStatus(tab.id, 'restored');
-      showToast('Tab reopened!');
-    });
+    card.querySelector('.card-title').addEventListener('click', handleRestore);
+    card.querySelector('.restore-btn').addEventListener('click', handleRestore);
 
     card.querySelector('.copy-btn').addEventListener('click', () => {
       const summaryText = `# ${tab.title}\n${tab.url}\n\nTL;DR: ${tab.summary?.tldr || ''}\n\nKey Takeaways:\n${(tab.summary?.bullets || []).map(b => `- ${b}`).join('\n')}`;

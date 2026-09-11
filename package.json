@@ -3,6 +3,12 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "test": "node tests/test_core.js"
+    "test": "node tests/test_core.js",
+    "test:dogfood": "node tests/dogfood.js",
+    "test:hardening": "node tests/test_tab_hardening.js",
+    "test:wiki": "node tests/test_wikipedia.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0"
   }
 }

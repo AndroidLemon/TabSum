@@ -61,33 +61,54 @@ export async function saveArchivedTab(tabData) {
   const rawText = tabData.cleanText || '';
   const cappedText = rawText.length > 50000 ? rawText.slice(0, 50000) : rawText;
 
-  const record = {
-    id: tabData.id || crypto.randomUUID(),
-    url: safeUrl,
-    title: tabData.title || 'Untitled Tab',
-    domain: tabData.domain || extractDomain(safeUrl),
-    favIconUrl: safeFavicon,
-    capturedAt: tabData.capturedAt || Date.now(),
-    lastActiveAt: tabData.lastActiveAt || Date.now(),
-    readingTimeMinutes: tabData.readingTimeMinutes || 1,
-    summary: tabData.summary || {
-      tldr: '',
-      bullets: [],
-      tags: []
-    },
-    cleanText: cappedText,
-    wordCount: tabData.wordCount || 0,
-    status: tabData.status || 'archived', // 'archived' | 'discarded' | 'restored'
-    meta: tabData.meta || {}
-  };
-
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite');
     const store = tx.objectStore(STORE_NAME);
-    const req = store.put(record);
+    const urlIndex = store.index('url');
 
-    req.onsuccess = () => resolve(record);
-    req.onerror = () => reject(req.error);
+    const finalizeSave = (targetId) => {
+      const record = {
+        id: targetId,
+        url: safeUrl,
+        title: tabData.title || 'Untitled Tab',
+        domain: tabData.domain || extractDomain(safeUrl),
+        favIconUrl: safeFavicon,
+        capturedAt: tabData.capturedAt || Date.now(),
+        lastActiveAt: tabData.lastActiveAt || Date.now(),
+        readingTimeMinutes: tabData.readingTimeMinutes || 1,
+        summary: tabData.summary || {
+          tldr: '',
+          bullets: [],
+          tags: []
+        },
+        cleanText: cappedText,
+        wordCount: tabData.wordCount || 0,
+        status: tabData.status || 'pending', // 'pending' | 'discarded' | 'archived' | 'aborted' | 'restored'
+        meta: tabData.meta || {}
+      };
+      const putReq = store.put(record);
+      putReq.onsuccess = () => resolve(record);
+      putReq.onerror = () => reject(putReq.error);
+    };
+
+    if (tabData.id) {
+      finalizeSave(tabData.id);
+      return;
+    }
+
+    // Deduplication: check if record with identical URL was saved in the past hour
+    const now = Date.now();
+    const ONE_HOUR = 60 * 60 * 1000;
+    const req = urlIndex.getAll(safeUrl);
+    req.onsuccess = () => {
+      const matches = req.result || [];
+      const recent = matches.find(m => (now - m.capturedAt) < ONE_HOUR);
+      const idToUse = recent ? recent.id : crypto.randomUUID();
+      finalizeSave(idToUse);
+    };
+    req.onerror = () => {
+      finalizeSave(crypto.randomUUID());
+    };
   });
 }
 
@@ -127,7 +148,12 @@ export async function getArchivedTabs(filters = {}) {
       const item = cursor.value;
 
       // Status filter
-      if (status && item.status !== status) {
+      if (!status) {
+        if (item.status === 'aborted' || item.status === 'pending') {
+          cursor.continue();
+          return;
+        }
+      } else if (item.status !== status) {
         cursor.continue();
         return;
       }
@@ -213,16 +239,64 @@ export async function getTabById(id) {
 }
 
 /**
- * Update tab status (e.g. 'restored' or 'archived')
+ * Update tab status (e.g. 'restored', 'archived', 'discarded', 'aborted')
  */
+export async function updateArchivedTabStatus(id, status) {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const store = tx.objectStore(STORE_NAME);
+    const getReq = store.get(id);
+
+    getReq.onsuccess = () => {
+      const record = getReq.result;
+      if (!record) {
+        resolve(null);
+        return;
+      }
+      record.status = status;
+      if (status === 'restored') {
+        record.restoredAt = Date.now();
+      }
+      const putReq = store.put(record);
+      putReq.onsuccess = () => resolve(record);
+      putReq.onerror = () => reject(putReq.error);
+    };
+    getReq.onerror = () => reject(getReq.error);
+  });
+}
+
 export async function updateTabStatus(id, status) {
-  const tab = await getTabById(id);
-  if (!tab) return null;
-  tab.status = status;
-  if (status === 'restored') {
-    tab.restoredAt = Date.now();
-  }
-  return saveArchivedTab(tab);
+  return updateArchivedTabStatus(id, status);
+}
+
+/**
+ * Reconcile orphan pending records from interrupted service worker sweeps
+ */
+export async function reconcilePendingRecords(maxAgeMs = 5 * 60 * 1000) {
+  const db = await getDB();
+  const now = Date.now();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const store = tx.objectStore(STORE_NAME);
+    const statusIndex = store.index('status');
+    const req = statusIndex.getAll('pending');
+
+    req.onsuccess = () => {
+      const pendingList = req.result || [];
+      let reconciledCount = 0;
+      for (const record of pendingList) {
+        if (now - record.capturedAt > maxAgeMs) {
+          record.status = 'aborted';
+          record.abortReason = 'Worker restarted or timed out during archival';
+          store.put(record);
+          reconciledCount++;
+        }
+      }
+      resolve({ reconciledCount });
+    };
+    req.onerror = () => reject(req.error);
+  });
 }
 
 /**
@@ -276,43 +350,18 @@ export async function getAllDomains() {
 }
 
 /**
- * Get dashboard stats
+ * Get dashboard stats (excluding pending and aborted tabs)
  */
 export async function getStats() {
-  const db = await getDB();
+  const tabs = await getArchivedTabs({ limit: 10000 });
   const now = Date.now();
   const dayAgo = now - 24 * 60 * 60 * 1000;
-
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readonly');
-    const store = tx.objectStore(STORE_NAME);
-    const totalReq = store.count();
-
-    const capturedIndex = store.index('capturedAt');
-    const range = IDBKeyRange.lowerBound(dayAgo);
-    const todayReq = capturedIndex.count(range);
-
-    let total = 0;
-    let today = 0;
-
-    totalReq.onsuccess = () => {
-      total = totalReq.result || 0;
-    };
-
-    todayReq.onsuccess = () => {
-      today = todayReq.result || 0;
-    };
-
-    tx.oncomplete = () => {
-      resolve({
-        total,
-        today,
-        totalReadingMinutes: total * 2
-      });
-    };
-
-    tx.onerror = () => reject(tx.error);
-  });
+  const todayTabs = tabs.filter(t => t.capturedAt >= dayAgo);
+  return {
+    total: tabs.length,
+    today: todayTabs.length,
+    totalReadingMinutes: tabs.reduce((acc, t) => acc + (t.readingTimeMinutes || 2), 0)
+  };
 }
 
 /**

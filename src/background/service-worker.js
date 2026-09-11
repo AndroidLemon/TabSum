@@ -4,7 +4,7 @@
  * soft suspension / auto-archival, and badge indicators.
  */
 
-import { saveArchivedTab, getSettings, extractDomain, getStats } from '../storage/db.js';
+import { saveArchivedTab, updateArchivedTabStatus, reconcilePendingRecords, getSettings, extractDomain, getStats } from '../storage/db.js';
 import { summarizeContent } from '../ai/summarizer.js';
 
 const ALARM_NAME = 'tabsum-inactivity-sweep';
@@ -24,13 +24,15 @@ chrome.runtime.onInstalled.addListener(async () => {
     }
   }
 
-  // Initialize active tab timestamps
+  // Initialize active tab timestamps & reconcile pending records
   await initializeTabTimestamps();
+  await reconcilePendingRecords().catch(console.error);
   await updateBadge();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
   await initializeTabTimestamps();
+  await reconcilePendingRecords().catch(console.error);
   await updateBadge();
 });
 
@@ -152,13 +154,8 @@ async function performInactivitySweep() {
   isSweeping = true;
 
   try {
-    // Check permission first: avoid silent script injection failures
-    const hasPermission = await chrome.permissions.contains({ origins: ['<all_urls>'] });
-    if (!hasPermission) {
-      console.log('[TabSum] Inactivity sweep skipped: <all_urls> permission not yet granted by user.');
-      return;
-    }
-
+    await reconcilePendingRecords().catch(console.error);
+    const hasGlobalPermission = await chrome.permissions.contains({ origins: ['<all_urls>'] });
     const settings = await getSettings();
     const timeoutMs = (settings.timeoutMinutes || 60) * 60 * 1000;
     const timestamps = await getTimestamps();
@@ -186,13 +183,26 @@ async function performInactivitySweep() {
         continue;
       }
 
-      // 6. Excluded domain check
+      // 6. Check host permission for this specific tab's origin
+      if (!hasGlobalPermission) {
+        try {
+          const originPattern = new URL(tab.url).origin + '/*';
+          const hasOrigin = await chrome.permissions.contains({ origins: [originPattern] });
+          if (!hasOrigin) {
+            continue;
+          }
+        } catch {
+          continue;
+        }
+      }
+
+      // 7. Excluded domain check
       const domain = extractDomain(tab.url).toLowerCase();
       if (excludedDomains.some(ex => domain === ex || domain.endsWith('.' + ex))) {
         continue;
       }
 
-      // 7. Check staleness threshold
+      // 8. Check staleness threshold
       const lastActive = timestamps[tab.id] || now;
       const idleDuration = now - lastActive;
       if (idleDuration < timeoutMs) {
@@ -200,6 +210,7 @@ async function performInactivitySweep() {
       }
 
       // Tab is eligible! Process archival
+      console.log(`[TabSum] Tab ${tab.id} (${tab.url}) is stale by ${Math.round(idleDuration / 1000)}s. Archiving...`);
       await processTabArchival(tab, settings, lastActive);
     }
   } finally {
@@ -233,7 +244,7 @@ async function processTabArchival(tab, settings, lastActiveTime) {
     // 3. Summarize content
     const summary = await summarizeContent(extracted, settings);
 
-    // 4. Save to IndexedDB
+    // 4. Save to IndexedDB with status 'pending' (Two-phase commit)
     const record = await saveArchivedTab({
       url: extracted.url || tab.url,
       title: extracted.title || tab.title,
@@ -245,7 +256,7 @@ async function processTabArchival(tab, settings, lastActiveTime) {
       summary,
       cleanText: extracted.cleanText || '',
       wordCount: extracted.wordCount || 0,
-      status: settings.archiveMode === 'close' ? 'archived' : 'discarded',
+      status: 'pending',
       meta: extracted.meta
     });
 
@@ -255,11 +266,17 @@ async function processTabArchival(tab, settings, lastActiveTime) {
       currentTab = await chrome.tabs.get(tab.id);
     } catch {
       // Tab was already closed by user
+      if (record?.id) {
+        await updateArchivedTabStatus(record.id, 'aborted');
+      }
       return;
     }
 
     if (!currentTab || currentTab.active || currentTab.audible) {
       console.log(`[TabSum] Tab ${tab.id} became active or audible during processing. Aborting closure.`);
+      if (record?.id) {
+        await updateArchivedTabStatus(record.id, 'aborted');
+      }
       return;
     }
 
@@ -267,12 +284,30 @@ async function processTabArchival(tab, settings, lastActiveTime) {
     if (settings.archiveMode === 'close') {
       await chrome.tabs.remove(tab.id);
       await removeTimestamp(tab.id);
+      if (record?.id) {
+        await updateArchivedTabStatus(record.id, 'archived');
+      }
       if (settings.notificationsEnabled) {
         showArchivedNotification(record.title);
       }
     } else {
-      // Soft discard: frees tab memory while keeping the tab visible in tab strip
+      // Soft discard: Inject sleeping tab indicator 💤 into title before discarding
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => {
+            if (!document.title.startsWith('💤 ')) {
+              document.title = '💤 ' + document.title;
+            }
+          }
+        });
+      } catch (titleErr) {
+        console.debug('[TabSum] Could not prefix title with sleeping symbol:', titleErr);
+      }
       await chrome.tabs.discard(tab.id);
+      if (record?.id) {
+        await updateArchivedTabStatus(record.id, 'discarded');
+      }
     }
 
     await updateBadge();
@@ -338,8 +373,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       if (message.type === 'RESTORE_TAB') {
         if (message.url) {
-          await chrome.tabs.create({ url: message.url, active: true });
-          sendResponse({ success: true });
+          // 1. Search existing open tabs for matching URL or tabId
+          const allTabs = await chrome.tabs.query({});
+          const existingTab = allTabs.find(t => 
+            (message.tabId && t.id === message.tabId) ||
+            t.url === message.url ||
+            t.pendingUrl === message.url
+          );
+
+          if (existingTab && existingTab.id) {
+            // Reactivate discarded or background tab in place!
+            await chrome.tabs.update(existingTab.id, { active: true });
+            if (existingTab.windowId) {
+              await chrome.windows.update(existingTab.windowId, { focused: true });
+            }
+            if (message.recordId) {
+              await updateArchivedTabStatus(message.recordId, 'restored');
+            }
+            sendResponse({ success: true, restoredInPlace: true, tabId: existingTab.id });
+            return;
+          }
+
+          // 2. Tab was closed, open fresh tab
+          const newTab = await chrome.tabs.create({ url: message.url, active: true });
+          if (message.recordId) {
+            await updateArchivedTabStatus(message.recordId, 'restored');
+          }
+          sendResponse({ success: true, restoredInPlace: false, tabId: newTab.id });
           return;
         }
       }

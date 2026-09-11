@@ -5,38 +5,77 @@
  */
 
 (function extractPageContent() {
-  // 1. Zero-Loss Safety Check: Inspect for dirty form inputs or active media
+  // Deep query helper to traverse open Shadow DOM roots
+  function queryAllDeep(selector, root = document) {
+    const elements = Array.from(root.querySelectorAll(selector));
+    try {
+      const treeWalker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+      let node = treeWalker.currentNode;
+      while (node) {
+        if (node.shadowRoot) {
+          elements.push(...queryAllDeep(selector, node.shadowRoot));
+        }
+        node = treeWalker.nextNode();
+      }
+    } catch {
+      // TreeWalker fallback
+    }
+    return elements;
+  }
+
+  // 1. Zero-Loss Safety Check: Inspect for dirty form inputs, rich editors, or active media
   function checkIsDirty() {
-    // Check text inputs
-    const inputs = document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"])');
+    // Only check user-editable text inputs (exclude checkboxes, radios, buttons, search bars, etc.)
+    const textTypes = new Set(['text', 'email', 'url', 'tel', 'password', 'number', '']);
+    const inputs = queryAllDeep('input');
     for (const input of inputs) {
+      const type = (input.getAttribute('type') || 'text').toLowerCase();
+      if (!textTypes.has(type)) {
+        continue;
+      }
+      if (input.readOnly || input.disabled || input.name === 'search' || input.getAttribute('role') === 'searchbox') {
+        continue;
+      }
       if (input.value && input.value.trim() !== '' && input.value !== input.defaultValue) {
         return { isDirty: true, reason: 'Unsaved form input detected' };
       }
     }
 
-    // Check textareas
-    const textareas = document.querySelectorAll('textarea');
+    // Check textareas (including in Shadow DOM)
+    const textareas = queryAllDeep('textarea');
     for (const ta of textareas) {
+      if (ta.readOnly || ta.disabled) continue;
       if (ta.value && ta.value.trim() !== '' && ta.value !== ta.defaultValue) {
         return { isDirty: true, reason: 'Unsaved textarea content detected' };
       }
     }
 
-    // Check contenteditable
-    const editables = document.querySelectorAll('[contenteditable="true"]');
+    // Check rich-text editors, contenteditables, and modern web app editors
+    const editables = queryAllDeep(
+      '[contenteditable="true"], [role="textbox"], .ProseMirror, .monaco-editor, .ql-editor, .DraftEditor-root'
+    );
     for (const el of editables) {
       if (el.innerText && el.innerText.trim().length > 5) {
-        return { isDirty: true, reason: 'Unsaved editable text detected' };
+        return { isDirty: true, reason: 'Unsaved rich-text editor draft detected' };
       }
     }
 
+    // Check active Picture-in-Picture
+    if (document.pictureInPictureElement) {
+      return { isDirty: true, reason: 'Active picture-in-picture video playing' };
+    }
+
     // Check playing audio or video
-    const mediaElements = document.querySelectorAll('video, audio');
+    const mediaElements = queryAllDeep('video, audio');
     for (const media of mediaElements) {
       if (!media.paused && !media.ended && media.currentTime > 0) {
         return { isDirty: true, reason: 'Active media playback detected' };
       }
+    }
+
+    // Check window.onbeforeunload handler as defensive signal
+    if (typeof window.onbeforeunload === 'function') {
+      return { isDirty: true, reason: 'Page has unsaved changes confirmation registered' };
     }
 
     return { isDirty: false };

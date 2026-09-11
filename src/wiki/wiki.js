@@ -235,15 +235,21 @@ async function renderGrid() {
     `;
 
     // Events
-    card.querySelector('.wiki-card-title').addEventListener('click', () => {
-      chrome.tabs.create({ url: tab.url, active: true });
-    });
+    const handleRestore = async () => {
+      const res = await chrome.runtime.sendMessage({
+        type: 'RESTORE_TAB',
+        url: tab.url,
+        recordId: tab.id
+      });
+      if (res?.restoredInPlace) {
+        showToast('Focused existing sleeping tab!');
+      } else {
+        showToast('Tab reopened in a new tab!');
+      }
+    };
 
-    card.querySelector('.restore-action-btn').addEventListener('click', async () => {
-      await chrome.tabs.create({ url: tab.url, active: true });
-      await updateTabStatus(tab.id, 'restored');
-      showToast('Tab reopened in a new tab!');
-    });
+    card.querySelector('.wiki-card-title').addEventListener('click', handleRestore);
+    card.querySelector('.restore-action-btn').addEventListener('click', handleRestore);
 
     card.querySelector('.reader-btn').addEventListener('click', () => {
       openReaderModal(tab);
