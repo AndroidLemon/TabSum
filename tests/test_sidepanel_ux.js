@@ -229,19 +229,29 @@ async function runSidePanelUXTests() {
     console.log('✓ Permanent deletion verified after 5s timeout\n');
 
     // --- TEST 7: Defer Deletions Until Close Option ---
-    console.log('--- Test 7: Defer Deletions Until Close Setting ---');
-    // Seed a tab to test deferred deletion
+    console.log('--- Test 7: Defer Deletions Until Close Setting (Visual Indicator, In-Card Undo & Undo All) ---');
+    // Seed two tabs to test multi-item deferred deletion
     await page.evaluate(async () => {
       const { saveArchivedTab, saveSettings } = await import('/src/storage/db.js');
       await saveSettings({ deferDeletionsUntilClose: true });
       await saveArchivedTab({
-        id: 'test-tab-deferred',
-        url: 'https://example.com/deferred',
-        title: 'Deferred Deletion Test Tab',
+        id: 'test-tab-deferred-1',
+        url: 'https://example.com/deferred-1',
+        title: 'Deferred Deletion Test Tab 1',
         domain: 'example.com',
         capturedAt: Date.now(),
         readingTimeMinutes: 1,
         summary: { tldr: 'Will not delete until window close.', bullets: [], tags: [] },
+        status: 'archived'
+      });
+      await saveArchivedTab({
+        id: 'test-tab-deferred-2',
+        url: 'https://example.com/deferred-2',
+        title: 'Deferred Deletion Test Tab 2',
+        domain: 'example.com',
+        capturedAt: Date.now() - 1000,
+        readingTimeMinutes: 2,
+        summary: { tldr: 'Second tab for multi-delete testing.', bullets: [], tags: [] },
         status: 'archived'
       });
     });
@@ -249,25 +259,73 @@ async function runSidePanelUXTests() {
     await page.reload();
     await page.waitForLoadState('domcontentloaded');
 
-    const deferredCard = page.locator('.tab-card[data-id="test-tab-deferred"]');
-    assert.strictEqual(await deferredCard.isVisible(), true, 'Deferred test card should be rendered');
+    const deferredCard1 = page.locator('.tab-card[data-id="test-tab-deferred-1"]');
+    const deferredCard2 = page.locator('.tab-card[data-id="test-tab-deferred-2"]');
+    assert.strictEqual(await deferredCard1.isVisible(), true, 'Deferred test card 1 should be rendered');
+    assert.strictEqual(await deferredCard2.isVisible(), true, 'Deferred test card 2 should be rendered');
 
-    // Click delete
-    await deferredCard.locator('.delete-btn').click();
-    await page.waitForTimeout(300);
+    // Click delete on Card 1
+    await deferredCard1.locator('.delete-btn').click();
+    await page.waitForTimeout(200);
 
-    // Toast should show deferred deletion notice
-    const deferredToastText = await page.locator('#toast-message').textContent();
-    assert.ok(deferredToastText.includes('pending deletion on close'), 'Toast should indicate deletion is deferred until close');
+    // Verify Card 1 stays visible, gets .pending-deletion class, and button turns to undo
+    assert.strictEqual(await deferredCard1.isVisible(), true, 'Card 1 should NOT disappear when deferred deletion is ON');
+    const card1HasPendingClass = await deferredCard1.evaluate(el => el.classList.contains('pending-deletion'));
+    assert.strictEqual(card1HasPendingClass, true, 'Card 1 should have pending-deletion class (semi-transparent & red tint)');
+    const card1BtnIsUndo = await deferredCard1.locator('.delete-btn').evaluate(el => el.classList.contains('is-undo'));
+    assert.strictEqual(card1BtnIsUndo, true, 'Card 1 delete button should toggle to is-undo');
 
-    // Wait 1.5s - in standard mode, this would still be pending, but verify it is still in DB
-    await page.waitForTimeout(1500);
+    // Verify Toast shows "1 item pending deletion on close" and button text is "Undo All"
+    let toastText = await page.locator('#toast-message').textContent();
+    assert.ok(toastText.includes('1 item pending deletion on close'), 'Toast should report 1 item pending deletion');
+    let toastBtnText = await page.locator('#toast-undo-btn').textContent();
+    assert.strictEqual(toastBtnText.trim(), 'Undo All', 'Toast button should read "Undo All"');
+
+    // Click delete on Card 2 (multi-item delete)
+    await deferredCard2.locator('.delete-btn').click();
+    await page.waitForTimeout(200);
+
+    assert.strictEqual(await deferredCard2.isVisible(), true, 'Card 2 should NOT disappear when deferred deletion is ON');
+    const card2HasPendingClass = await deferredCard2.evaluate(el => el.classList.contains('pending-deletion'));
+    assert.strictEqual(card2HasPendingClass, true, 'Card 2 should have pending-deletion class');
+
+    // Toast updates to 2 items
+    toastText = await page.locator('#toast-message').textContent();
+    assert.ok(toastText.includes('2 items pending deletion on close'), 'Toast should report 2 items pending deletion');
+
+    // Test in-card Undo button on Card 1
+    console.log('Testing in-card undo button on Card 1...');
+    await deferredCard1.locator('.delete-btn.is-undo').click();
+    await page.waitForTimeout(200);
+
+    const card1StillPending = await deferredCard1.evaluate(el => el.classList.contains('pending-deletion'));
+    assert.strictEqual(card1StillPending, false, 'Card 1 should no longer have pending-deletion class after in-card undo');
+    const card1BtnRestored = await deferredCard1.locator('.delete-btn').evaluate(el => !el.classList.contains('is-undo'));
+    assert.strictEqual(card1BtnRestored, true, 'Card 1 button should revert to normal delete button');
+
+    // Toast should now show 1 item remaining
+    toastText = await page.locator('#toast-message').textContent();
+    assert.ok(toastText.includes('1 item pending deletion on close'), 'Toast should update to 1 item remaining');
+
+    // Test "Undo All" via toast button
+    console.log('Testing "Undo All" button via toast...');
+    await page.locator('#toast-undo-btn').click();
+    await page.waitForTimeout(200);
+
+    const card2StillPending = await deferredCard2.evaluate(el => el.classList.contains('pending-deletion'));
+    assert.strictEqual(card2StillPending, false, 'Card 2 should no longer have pending-deletion class after Undo All');
+
+    // Re-stage Card 1 for deletion to test finalization on beforeunload
+    await deferredCard1.locator('.delete-btn').click();
+    await page.waitForTimeout(200);
+
+    // Verify still in DB before unload
     const stillInDb = await page.evaluate(async () => {
       const { getArchivedTabs } = await import('/src/storage/db.js');
       const tabs = await getArchivedTabs({});
-      return tabs.some(t => t.id === 'test-tab-deferred');
+      return tabs.some(t => t.id === 'test-tab-deferred-1');
     });
-    assert.strictEqual(stillInDb, true, 'Card should still exist in DB while panel is open');
+    assert.strictEqual(stillInDb, true, 'Card 1 should still exist in DB while panel is open');
 
     // Trigger unload to finalize pending deletions
     await page.evaluate(() => {
@@ -275,14 +333,18 @@ async function runSidePanelUXTests() {
     });
     await page.waitForTimeout(300);
 
-    // Verify it is now permanently deleted
-    const deletedAfterUnload = await page.evaluate(async () => {
+    // Verify Card 1 is permanently deleted, and Card 2 is preserved
+    const { card1Deleted, card2Preserved } = await page.evaluate(async () => {
       const { getArchivedTabs } = await import('/src/storage/db.js');
       const tabs = await getArchivedTabs({});
-      return tabs.some(t => t.id === 'test-tab-deferred');
+      return {
+        card1Deleted: !tabs.some(t => t.id === 'test-tab-deferred-1'),
+        card2Preserved: tabs.some(t => t.id === 'test-tab-deferred-2')
+      };
     });
-    assert.strictEqual(deletedAfterUnload, false, 'Card should be permanently deleted after panel beforeunload');
-    console.log('✓ Defer deletions until close verified\n');
+    assert.strictEqual(card1Deleted, true, 'Card 1 should be permanently deleted after panel beforeunload');
+    assert.strictEqual(card2Preserved, true, 'Card 2 should be preserved in DB');
+    console.log('✓ Defer deletions visual indicators, in-card undo, and Undo All verified\n');
 
     // --- TEST 8: Close Sidebar When Opening Dashboard Setting ---
     console.log('--- Test 8: Close Sidebar When Opening Dashboard Setting ---');

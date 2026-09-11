@@ -86,6 +86,8 @@ assert.ok(cssContent.includes('@starting-style'), 'wiki.css must support @starti
 assert.ok(cssContent.includes('.modal-text-content'), 'wiki.css must style .modal-text-content');
 assert.ok(cssContent.includes('max-width: 68ch;'), 'wiki.css typography must have max-width: 68ch');
 assert.ok(cssContent.includes('.search-highlight'), 'wiki.css must have .search-highlight class');
+assert.ok(cssContent.includes('.wiki-card.pending-deletion'), 'wiki.css must have .wiki-card.pending-deletion styling');
+assert.ok(cssContent.includes('.wiki-card .delete-btn.is-undo'), 'wiki.css must have .is-undo button styling');
 assert.ok(cssContent.includes('.wiki-card.removing'), 'wiki.css must have .wiki-card.removing animation');
 assert.ok(cssContent.includes('.star-btn'), 'wiki.css must have .star-btn styling');
 assert.ok(cssContent.includes('.toast-undo-btn'), 'wiki.css must have .toast-undo-btn styling');
@@ -109,5 +111,7 @@ const wikiJs = fs.readFileSync(path.resolve('src/wiki/wiki.js'), 'utf-8');
 assert.ok(wikiJs.includes("window.addEventListener('beforeunload'"), 'wiki.js must listen to beforeunload');
 assert.ok(wikiJs.includes("window.addEventListener('pagehide'"), 'wiki.js must listen to pagehide');
 assert.ok(wikiJs.includes('deferDeletionsUntilClose'), 'wiki.js must check deferDeletionsUntilClose');
+assert.ok(wikiJs.includes('updateWikiDeferredToast'), 'wiki.js must define updateWikiDeferredToast');
+assert.ok(wikiJs.includes("'Undo All'"), 'wiki.js must support Undo All button');
 
 console.log('--- All Wiki & Modal UX Verification Tests Passed Successfully! ---');

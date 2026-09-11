@@ -688,6 +688,37 @@ body {
   overflow: hidden;
 }
 
+/* Staged pending deletion: semi-transparent, reddish tint, strike-through */
+.tab-card.pending-deletion {
+  opacity: 0.55;
+  background: rgba(239, 68, 68, 0.08) !important;
+  border-color: rgba(239, 68, 68, 0.45) !important;
+  box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.25);
+  transition: opacity 0.25s ease, background-color 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.tab-card.pending-deletion:hover {
+  opacity: 0.75;
+  border-color: rgba(239, 68, 68, 0.6) !important;
+}
+
+.tab-card.pending-deletion .card-title,
+.tab-card.pending-deletion .card-domain {
+  text-decoration: line-through;
+  text-decoration-color: rgba(239, 68, 68, 0.6);
+}
+
+.tab-card .delete-btn.is-undo {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.15);
+  border-radius: var(--radius-sm, 6px);
+}
+
+.tab-card .delete-btn.is-undo:hover {
+  color: #ffffff;
+  background: #ef4444;
+}
+
 /* Compact Card Styling (~42px scannable row) */
 .tab-card.compact {
   flex-direction: row;

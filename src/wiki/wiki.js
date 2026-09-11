@@ -26,6 +26,39 @@ let toastTimeout = null;
 let activeReaderTab = null;
 const pendingDeletes = new Map(); // tabId -> { timer, tabData, cardElement, nextSibling, parent }
 
+const TRASH_SVG = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`;
+const UNDO_SVG = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M3 10h10a5 5 0 0 1 5 5v2M3 10l6-6M3 10l6 6"></path></svg>`;
+
+function updateWikiDeferredToast() {
+  const count = pendingDeletes.size;
+  if (count === 0) {
+    const toast = document.getElementById('toast');
+    if (toast) toast.classList.add('hidden');
+    return;
+  }
+  const toastMsg = `${count} ${count === 1 ? 'item' : 'items'} pending deletion on close`;
+  showUndoToast(toastMsg, async () => {
+    for (const [id] of pendingDeletes.entries()) {
+      const card = document.querySelector(`.wiki-card[data-id="${id}"]`);
+      if (card) {
+        card.classList.remove('pending-deletion');
+        const btn = card.querySelector('.delete-btn');
+        if (btn) {
+          btn.classList.remove('is-undo');
+          btn.title = 'Delete Summary';
+          btn.innerHTML = TRASH_SVG;
+        }
+        card.classList.add('undo-restored');
+        setTimeout(() => card.classList.remove('undo-restored'), 1000);
+      }
+    }
+    pendingDeletes.clear();
+    await updateCounts();
+    await renderSidebarFilters();
+    showToast('All deletions undone');
+  }, 10000, true, 'Undo All');
+}
+
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', async () => {
@@ -345,8 +378,13 @@ async function renderGrid() {
     limit: 200
   });
 
-  // Filter out any tabs that are currently staged for deletion
-  const tabs = rawTabs.filter(t => !pendingDeletes.has(t.id));
+  const settings = await getSettings().catch(() => ({}));
+  const deferUntilClose = Boolean(settings.deferDeletionsUntilClose);
+
+  // Filter out any tabs that are currently staged for deletion only if deferUntilClose is FALSE
+  const tabs = deferUntilClose
+    ? rawTabs
+    : rawTabs.filter(t => !pendingDeletes.has(t.id));
 
   countLabel.textContent = `${tabs.length} ${tabs.length === 1 ? 'summary' : 'summaries'}`;
 
@@ -364,8 +402,9 @@ async function renderGrid() {
   container.innerHTML = '';
 
   for (const tab of tabs) {
+    const isPendingDelete = deferUntilClose && pendingDeletes.has(tab.id);
     const card = document.createElement('article');
-    card.className = 'wiki-card';
+    card.className = isPendingDelete ? 'wiki-card pending-deletion' : 'wiki-card';
     card.dataset.id = tab.id;
 
     const faviconSrc = tab.favIconUrl || `https://www.google.com/s2/favicons?domain=${tab.domain}&sz=32`;
@@ -384,6 +423,10 @@ async function renderGrid() {
     const statusBadge = isSleeping
       ? `<span class="badge-status sleeping" title="${escapeHtml(tab.closureReason || 'Sleeping tab (RAM suspended)')}">💤 Sleeping</span>`
       : `<span class="badge-status archived" title="${escapeHtml(tab.closureReason || 'Archived to knowledge base')}">🗄️ Archived</span>`;
+
+    const deleteBtnTitle = isPendingDelete ? 'Undo deletion' : 'Delete Summary';
+    const deleteBtnClass = isPendingDelete ? 'subaction-btn delete delete-btn is-undo' : 'subaction-btn delete delete-btn';
+    const deleteBtnIcon = isPendingDelete ? UNDO_SVG : TRASH_SVG;
 
     card.innerHTML = `
       <div class="card-top">
@@ -420,8 +463,8 @@ async function renderGrid() {
           <button class="subaction-btn copy-btn" title="Copy Markdown">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
           </button>
-          <button class="subaction-btn delete delete-btn" title="Delete Summary">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+          <button class="${deleteBtnClass}" title="${deleteBtnTitle}">
+            ${deleteBtnIcon}
           </button>
         </div>
       </div>
@@ -487,8 +530,9 @@ async function renderGrid() {
       }, 1500);
     });
 
-    // Staged deletion with 5-second undo
-    card.querySelector('.delete-btn').addEventListener('click', () => {
+    // Staged deletion with 5-second undo or deferred session deletion
+    card.querySelector('.delete-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
       stageCardDeletion(tab, card);
     });
 
@@ -633,7 +677,7 @@ function showToast(message) {
   }, 2500);
 }
 
-function showUndoToast(message, onUndo, duration = 5000, deferUntilClose = false) {
+function showUndoToast(message, onUndo, duration = 5000, deferUntilClose = false, undoText = 'Undo') {
   const toast = document.getElementById('toast');
   if (!toast) return;
   clearTimeout(toastTimeout);
@@ -643,7 +687,7 @@ function showUndoToast(message, onUndo, duration = 5000, deferUntilClose = false
   toast.innerHTML = `
     <div class="toast-content">
       <span class="toast-message">${escapeHtml(message)}</span>
-      <button class="toast-undo-btn" id="toast-undo-action-btn">Undo</button>
+      <button class="toast-undo-btn" id="toast-undo-action-btn">${escapeHtml(undoText)}</button>
     </div>
     ${progressBarHtml}
   `;
@@ -670,6 +714,59 @@ function showUndoToast(message, onUndo, duration = 5000, deferUntilClose = false
  */
 export async function stageCardDeletion(tab, cardElement) {
   const tabId = tab.id;
+  let settings = {};
+  try {
+    settings = await getSettings();
+  } catch (err) {
+    console.debug('Failed to get settings in stageCardDeletion:', err);
+  }
+  const deferUntilClose = Boolean(settings.deferDeletionsUntilClose);
+
+  if (deferUntilClose) {
+    const deleteBtn = cardElement.querySelector('.delete-btn');
+    if (pendingDeletes.has(tabId)) {
+      // User clicked Undo on this specific card
+      pendingDeletes.delete(tabId);
+      cardElement.classList.remove('pending-deletion');
+      if (deleteBtn) {
+        deleteBtn.classList.remove('is-undo');
+        deleteBtn.title = 'Delete Summary';
+        deleteBtn.innerHTML = TRASH_SVG;
+      }
+      cardElement.classList.add('undo-restored');
+      setTimeout(() => cardElement.classList.remove('undo-restored'), 1000);
+      await updateCounts();
+      await renderSidebarFilters();
+
+      if (pendingDeletes.size === 0) {
+        const toast = document.getElementById('toast');
+        if (toast) toast.classList.add('hidden');
+        showToast('Summary deletion undone');
+      } else {
+        updateWikiDeferredToast();
+      }
+    } else {
+      // Stage this card for deferred deletion
+      cardElement.classList.add('pending-deletion');
+      if (deleteBtn) {
+        deleteBtn.classList.add('is-undo');
+        deleteBtn.title = 'Undo deletion';
+        deleteBtn.innerHTML = UNDO_SVG;
+      }
+      pendingDeletes.set(tabId, {
+        timer: null,
+        tabData: tab,
+        cardElement,
+        deferUntilClose: true
+      });
+      await updateCounts();
+      await renderSidebarFilters();
+      updateWikiDeferredToast();
+    }
+    return;
+  }
+
+  // Standard 5-second undo when deferUntilClose is FALSE
   if (pendingDeletes.has(tabId)) return;
 
   // Animate card removal
@@ -679,27 +776,15 @@ export async function stageCardDeletion(tab, cardElement) {
   const nextSibling = cardElement.nextElementSibling;
   const parent = cardElement.parentElement;
 
-  let settings = {};
-  try {
-    settings = await getSettings();
-  } catch (err) {
-    console.debug('Failed to get settings in stageCardDeletion:', err);
-  }
-  const deferUntilClose = Boolean(settings.deferDeletionsUntilClose);
-
-  // Staged deletion timer (only if not deferred until close)
-  let timer = null;
-  if (!deferUntilClose) {
-    timer = setTimeout(async () => {
-      pendingDeletes.delete(tabId);
-      if (cardElement.parentElement) {
-        cardElement.remove();
-      }
-      await deleteArchivedTab(tabId);
-      await updateCounts();
-      await renderSidebarFilters();
-    }, 5000);
-  }
+  const timer = setTimeout(async () => {
+    pendingDeletes.delete(tabId);
+    if (cardElement.parentElement) {
+      cardElement.remove();
+    }
+    await deleteArchivedTab(tabId);
+    await updateCounts();
+    await renderSidebarFilters();
+  }, 5000);
 
   pendingDeletes.set(tabId, {
     timer,
@@ -707,15 +792,10 @@ export async function stageCardDeletion(tab, cardElement) {
     cardElement,
     nextSibling,
     parent,
-    deferUntilClose
+    deferUntilClose: false
   });
 
-  const toastMsg = deferUntilClose
-    ? `Summary removed (${pendingDeletes.size} pending deletion on close)`
-    : 'Summary removed from Wiki';
-  const duration = deferUntilClose ? 8000 : 5000;
-
-  showUndoToast(toastMsg, async () => {
+  showUndoToast('Summary removed from Wiki', async () => {
     const pending = pendingDeletes.get(tabId);
     if (!pending) return;
 
@@ -743,7 +823,7 @@ export async function stageCardDeletion(tab, cardElement) {
     showToast('Summary restored');
     await updateCounts();
     await renderSidebarFilters();
-  }, duration, deferUntilClose);
+  }, 5000, false, 'Undo');
 }
 
 /**
