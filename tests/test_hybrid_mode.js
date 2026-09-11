@@ -230,6 +230,19 @@ async function runHybridTests() {
     assert.strictEqual(pickedResult.withDate.isDirty, true, 'A picked date must mark the page dirty');
     console.log(`✓ Picked date blocked (${pickedResult.withDate.reason}); menu checkbox ignored`);
 
+    // 1a'': clearing a prefilled field is an edit too
+    const clearedResult = await purePage.evaluate((code) => {
+      const field = document.createElement('input');
+      field.defaultValue = 'prefilled';
+      document.body.append(field);
+      field.value = '';
+      const result = eval(code);
+      field.remove();
+      return result;
+    }, extractorCode);
+    assert.strictEqual(clearedResult.isDirty, true, 'Clearing a prefilled field must mark the page dirty');
+    console.log('✓ Cleared prefilled field blocked');
+
     // 1b: Article with site search -> safe_to_close (search inputs must NOT block closure)
     const searchPage = await context.newPage();
     await searchPage.goto(`http://localhost:${PORT}/article-with-search`);

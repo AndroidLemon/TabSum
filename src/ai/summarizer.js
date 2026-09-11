@@ -397,8 +397,7 @@ async function readChatCompletion(res) {
   let text = '';
   for (;;) {
     const { value, done } = await reader.read();
-    if (done) return text;
-    buffer += value;
+    buffer += done ? '\n' : value; // at EOF, flush a final event that had no trailing newline
     const lines = buffer.split('\n');
     buffer = lines.pop(); // keep a partial line for the next chunk
     for (const line of lines) {
@@ -411,6 +410,7 @@ async function readChatCompletion(res) {
         // malformed chunk; skip it
       }
     }
+    if (done) return text;
   }
 }
 

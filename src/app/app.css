@@ -545,6 +545,13 @@ button {
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
+.filters-btn:focus-visible,
+.sort-select:focus-visible,
+.density-toggle-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .sort-select {
   font-size: 11px;
   padding: 4px 6px;

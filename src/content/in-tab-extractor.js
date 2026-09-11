@@ -47,7 +47,8 @@
       if (input.readOnly || input.disabled || isSearchInput(input)) {
         continue;
       }
-      if (valueTypes.has(type) && input.value && input.value.trim() !== '' && input.value !== input.defaultValue) {
+      // Direct comparison, so clearing a prefilled field counts as an edit too
+      if (valueTypes.has(type) && input.value !== input.defaultValue) {
         return { isDirty: true, reason: 'Unsaved form input detected' };
       }
       if (type === 'file' && input.files?.length) {
@@ -59,7 +60,7 @@
     const textareas = queryAllDeep('textarea');
     for (const ta of textareas) {
       if (ta.readOnly || ta.disabled) continue;
-      if (ta.value && ta.value.trim() !== '' && ta.value !== ta.defaultValue) {
+      if (ta.value !== ta.defaultValue) {
         return { isDirty: true, reason: 'Unsaved textarea content detected' };
       }
     }

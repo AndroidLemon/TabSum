@@ -24,10 +24,10 @@ const settings = {
 };
 const reply = { tldr: 'Bloom filters trade certainty for space.', bullets: ['No false negatives'], tags: ['#Data Structures'] };
 
-function sseResponse(text) {
+function sseResponse(text, tail = ': keep-alive\n\ndata: [DONE]\n\n') {
   // Split the SSE payload at awkward offsets so chunk boundaries fall mid-line
   const events = [...text].map(ch => `data: ${JSON.stringify({ choices: [{ delta: { content: ch } }] })}\n\n`).join('')
-    + ': keep-alive\n\ndata: [DONE]\n\n';
+    + tail;
   const chunks = events.match(/[\s\S]{1,7}/g);
   const body = new ReadableStream({
     start(controller) {
@@ -58,6 +58,13 @@ assert.strictEqual(summary.source, 'openai-compatible', 'Counts as an AI summary
 assert.strictEqual(summary.tldr, reply.tldr);
 assert.deepStrictEqual(summary.tags, ['Data Structures'], 'Output normalized');
 console.log('✓ Streaming SSE reply parsed across chunk boundaries');
+
+// 1b. Stream closes without [DONE] and without a trailing newline on the last event
+mockFetch(() => sseResponse(JSON.stringify(reply), `data: ${JSON.stringify({ choices: [{ delta: { content: ' ' } }] })}`));
+summary = await summarizeContent(article, settings);
+assert.strictEqual(summary.source, 'openai-compatible', 'Final unterminated event is not dropped');
+assert.strictEqual(summary.tldr, reply.tldr);
+console.log('✓ Stream ending mid-line is flushed at EOF');
 
 // 2. Server ignores stream:true and returns JSON, reasoning model emits <think>
 mockFetch(() => Response.json({
