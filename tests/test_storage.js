@@ -219,7 +219,20 @@ assert.strictEqual((await fadeExpiredTabs(fade)).fadedCount, 1);
 assert.strictEqual(await getTabById('f-old'), null, 'Expired note faded');
 const recaptured = await saveArchivedTab({ url: 'https://f.example/reopened', status: 'archived' });
 assert.strictEqual(recaptured.restoredAt, undefined, 'Recapture puts a note back in the inbox');
+await saveArchivedTab({ id: 'f-kept', url: 'https://f.example/kept', status: 'discarded', capturedAt: nowMs - 31 * DAY });
+await saveArchivedTab({ id: 'f-orphan', url: 'https://f.example/orphan', status: 'discarded', capturedAt: nowMs - 31 * DAY });
+assert.strictEqual((await fadeExpiredTabs(fade, new Set(['f-kept']))).fadedCount, 1);
+assert.ok(await getTabById('f-kept'), 'Records of still-suspended tabs survive fading');
+assert.strictEqual(await getTabById('f-orphan'), null, 'Untracked discarded records fade');
 console.log('✓ Inbox views, fading and expiring-soon sort verified');
+
+// Test 13: JSON import - unknown ids dedupe on URL; field types are coerced
+const imported = await saveArchivedTab({ id: 'imp-1', url: 'https://f.example/new', title: 42, readingTimeMinutes: '<img src=x onerror=alert(1)>' });
+assert.strictEqual(imported.id, 'f-new', 'Unknown id falls back to URL dedupe');
+assert.strictEqual(imported.title, 'Untitled Tab');
+assert.strictEqual(imported.readingTimeMinutes, 1, 'Non-numeric reading time is coerced');
+assert.strictEqual((await getArchivedTabs({ query: 'f.example' })).length > 0, true, 'Search still works after import');
+console.log('✓ Import validation verified');
 
 await clearAllHistory();
 console.log('--- Storage Unit Tests Passed Successfully! ---');

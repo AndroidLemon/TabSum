@@ -89,7 +89,8 @@ export function formatStandaloneNote(tab) {
   const capturedAt = toIsoDate(tab);
   const readingTime = getReadingTime(tab);
   const tags = getTags(tab);
-  const tagsFormatted = `[${tags.map(t => (t.includes(' ') ? `"${t}"` : t)).join(', ')}]`;
+  // JSON strings are valid YAML scalars, so any tag text round-trips
+  const tagsFormatted = `[${tags.map(t => JSON.stringify(t)).join(', ')}]`;
   const bullets = getBullets(tab);
   const bulletsContent = bullets.length ? bullets.map(b => `- ${b}`).join('\n') : '- No key takeaways recorded';
 
@@ -201,7 +202,7 @@ export function buildZip(files) {
     const localHeader = new Uint8Array(30 + nameBytes.length);
     writeUint32LE(localHeader, 0, 0x04034b50);
     writeUint16LE(localHeader, 4, 20);
-    writeUint16LE(localHeader, 6, 0);
+    writeUint16LE(localHeader, 6, 0x0800); // bit 11: names are UTF-8
     writeUint16LE(localHeader, 8, 0); // method 0 = STORE (no compression)
     writeUint16LE(localHeader, 10, dosTime);
     writeUint16LE(localHeader, 12, dosDate);
@@ -217,7 +218,7 @@ export function buildZip(files) {
     writeUint32LE(centralHeader, 0, 0x02014b50);
     writeUint16LE(centralHeader, 4, 20);
     writeUint16LE(centralHeader, 6, 20);
-    writeUint16LE(centralHeader, 8, 0);
+    writeUint16LE(centralHeader, 8, 0x0800); // bit 11: names are UTF-8
     writeUint16LE(centralHeader, 10, 0);
     writeUint16LE(centralHeader, 12, dosTime);
     writeUint16LE(centralHeader, 14, dosDate);

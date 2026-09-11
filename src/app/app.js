@@ -703,7 +703,7 @@ function setupEventListeners() {
     tag: '',
     domain: ''
   })));
-  document.querySelectorAll('.view-tab-btn').forEach(btn => btn.addEventListener('click', () => applyFilters({ view: btn.dataset.view })));
+  document.querySelectorAll('.view-tab-btn').forEach(btn => btn.addEventListener('click', () => applyFilters({ view: btn.dataset.view, time: '' })));
   $('sidebar-tags').addEventListener('click', (e) => {
     const btn = e.target.closest('[data-tag]');
     if (btn) applyFilters({ tag: state.tag === btn.dataset.tag ? '' : btn.dataset.tag, domain: '' });

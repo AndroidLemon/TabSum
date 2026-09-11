@@ -108,12 +108,13 @@ export async function saveArchivedTab(tabData) {
       record = {
         id: existing?.id || tabData.id || crypto.randomUUID(),
         url: safeUrl,
-        title: tabData.title || 'Untitled Tab',
-        domain: tabData.domain || extractDomain(safeUrl),
+        // JSON import feeds arbitrary values here; the UI assumes these types
+        title: (typeof tabData.title === 'string' && tabData.title) || 'Untitled Tab',
+        domain: (typeof tabData.domain === 'string' && tabData.domain) || extractDomain(safeUrl),
         favIconUrl: safeFavicon,
         capturedAt: tabData.capturedAt || Date.now(),
         lastActiveAt: tabData.lastActiveAt || Date.now(),
-        readingTimeMinutes: tabData.readingTimeMinutes || 1,
+        readingTimeMinutes: Math.max(1, Math.round(Number(tabData.readingTimeMinutes)) || 1),
         summary: sanitizeSummary(tabData.summary),
         summarySource: tabData.summarySource || 'heuristic', // 'gemini-api' | 'prompt-api' | 'heuristic'
         closedAt: tabData.closedAt || null, // set only when TabSum itself closed the tab
@@ -131,14 +132,18 @@ export async function saveArchivedTab(tabData) {
       tx.objectStore(TEXT_STORE).put({ id: record.id, cleanText });
     };
 
-    if (tabData.id) {
-      const req = store.get(tabData.id);
-      req.onsuccess = () => write(req.result);
-    } else if (safeUrl) {
+    const writeDedupedByUrl = () => {
+      if (!safeUrl) return write(null); // never dedupe records without a URL together
       const req = store.index('url').getAll(safeUrl);
       req.onsuccess = () => write(req.result.find(r => !r.deletedAt));
+    };
+
+    if (tabData.id) {
+      // An unknown id (e.g. JSON import) still dedupes on URL
+      const req = store.get(tabData.id);
+      req.onsuccess = () => (req.result ? write(req.result) : writeDedupedByUrl());
     } else {
-      write(null); // never dedupe records without a URL together
+      writeDedupedByUrl();
     }
 
     onTxDone(tx, resolve, reject, () => record);
@@ -381,10 +386,10 @@ export function getExpiry(record, settings = {}) {
 }
 
 /**
- * Delete notes past their fade date. Skips notes whose tab is still open but suspended
- * ('discarded'): hybrid mode's second tier needs that record to close the tab.
+ * Delete notes past their fade date. Skips keepIds (records of tabs TabSum suspended that
+ * are still open): hybrid mode's second tier needs that record to close the tab.
  */
-export async function fadeExpiredTabs(settings) {
+export async function fadeExpiredTabs(settings, keepIds = new Set()) {
   const db = await getDB();
   const now = Date.now();
   return new Promise((resolve, reject) => {
@@ -395,7 +400,7 @@ export async function fadeExpiredTabs(settings) {
       const cursor = event.target.result;
       if (!cursor) return;
       const expiry = getExpiry(cursor.value, settings);
-      if (expiry !== null && expiry <= now && cursor.value.status !== 'discarded') {
+      if (expiry !== null && expiry <= now && !keepIds.has(cursor.key)) {
         cursor.delete();
         textStore.delete(cursor.key);
         fadedCount++;

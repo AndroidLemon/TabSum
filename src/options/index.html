@@ -95,7 +95,7 @@
       <div class="setting-row">
         <div class="setting-label-group">
           <label for="ai-close-toggle">Only Close Tabs With an AI Summary</label>
-          <span class="setting-desc">If no AI summary is available (on-device model or Gemini key), suspend the tab instead of closing it. Closed tabs are listed under "Closed today" in the Side Panel.</span>
+          <span class="setting-desc">If no AI summary is available (on-device model, local server, or Gemini key), suspend the tab instead of closing it. Closed tabs are listed under "Closed today" in the Side Panel.</span>
         </div>
         <input type="checkbox" id="ai-close-toggle" class="form-toggle">
       </div>
@@ -123,7 +123,7 @@
           <span class="setting-desc">Select which engine powers structured distillation and topic extraction.</span>
         </div>
         <select id="ai-provider-select" class="form-select">
-          <option value="auto">Auto (Best Available — Local First)</option>
+          <option value="auto">Auto (Chrome on-device model, else heuristic)</option>
           <option value="prompt-api">Chrome Built-in Prompt API (Gemini Nano)</option>
           <option value="heuristic">Algorithmic Heuristic (Instant, 100% Offline)</option>
           <option value="gemini-api">Google Gemini Flash (Cloud BYOK)</option>

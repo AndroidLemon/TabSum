@@ -40,7 +40,7 @@ function withTimeout(promise, ms) {
  * Main summarization dispatcher
  * @param {Object} extractedData { title, cleanText, meta, domain, wordCount, isLowConfidence }
  * @param {Object} settings { aiProvider, geminiApiKey }
- * @returns {Promise<{ tldr: string, bullets: string[], tags: string[], source: 'gemini-api'|'prompt-api'|'heuristic' }>}
+ * @returns {Promise<{ tldr: string, bullets: string[], tags: string[], source: 'gemini-api'|'openai-compatible'|'prompt-api'|'heuristic' }>}
  *   `source` says which tier wrote it; auto-close only trusts AI-written summaries.
  *   Only AI tiers produce tags. `heuristicTags` carries the keyword tagger's output for
  *   side-by-side comparison; it is stored in record.meta and never shown.
@@ -319,7 +319,8 @@ async function summarizeWithGeminiAPI({ title, cleanText }, apiKey) {
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: {
         responseMimeType: 'application/json',
-        responseSchema: SUMMARY_SCHEMA
+        // responseSchema wants Gemini's uppercase OpenAPI types; this field takes plain JSON Schema
+        responseJsonSchema: SUMMARY_SCHEMA
       }
     }),
     signal: AbortSignal.timeout(TIER_TIMEOUT_MS)

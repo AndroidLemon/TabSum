@@ -52,6 +52,12 @@ chrome.runtime.onStartup.addListener(initialize);
  */
 async function initialize() {
   await initializeTabTimestamps();
+  // Baselines for compensateAwayTime, so sleep/idle before the first sweep isn't counted as inactivity
+  const state = await chrome.idle.queryState(IDLE_DETECTION_SECONDS);
+  await chrome.storage.session.set({
+    lastSweepAt: Date.now(),
+    ...(state === 'active' ? {} : { idleSince: Date.now() })
+  });
   await purgeDeletedTabs().catch(console.error);
   await updateBadge();
 }
@@ -347,7 +353,7 @@ async function fadeHourly(settings) {
   const { lastFadeAt } = await chrome.storage.session.get('lastFadeAt');
   if (lastFadeAt && Date.now() - lastFadeAt < 60 * 60 * 1000) return;
   await chrome.storage.session.set({ lastFadeAt: Date.now() });
-  const { fadedCount } = await fadeExpiredTabs(settings);
+  const { fadedCount } = await fadeExpiredTabs(settings, new Set(Object.values(await getDiscardedMap())));
   if (fadedCount) {
     console.log(`[TabSum] ${fadedCount} note(s) faded.`);
     await updateBadge();
@@ -385,6 +391,16 @@ async function revertIfStillOpen(tabId, recordId, status, reason) {
 }
 
 /**
+ * Last check before a destructive call: did the user switch to (or start playing) the tab
+ * while we were writing the record?
+ * ponytail: shrinks the race window to one tabs.get round trip; it can't close it entirely.
+ */
+async function userReopened(tabId) {
+  const live = await chrome.tabs.get(tabId).catch(() => null);
+  return Boolean(live && (live.active || live.audible));
+}
+
+/**
  * Hybrid tier 2: close a tab TabSum discarded earlier. No re-extraction (discarded tabs
  * can't be scripted); the record captured at discard time becomes the archive.
  */
@@ -395,6 +411,11 @@ async function closeDiscardedTab(tab, recordId, settings) {
     if (!canCloseWith(record.summarySource, settings)) return; // stays suspended
 
     await markTabClosed(recordId);
+    if (await userReopened(tab.id)) {
+      // onActivated may have marked it restored before markTabClosed overwrote that
+      await updateArchivedTabStatus(recordId, 'restored');
+      return;
+    }
     const removed = await chrome.tabs.remove(tab.id).then(() => true, () => false);
     if (!removed) {
       await revertIfStillOpen(tab.id, recordId, 'discarded', 'Chrome refused to close this tab; it stays suspended');
@@ -486,6 +507,10 @@ async function processTabArchival(tab, settings, lastActiveTime) {
     });
 
     if (shouldClose) {
+      if (await userReopened(tab.id)) {
+        await revertIfStillOpen(tab.id, record.id, 'captured', 'You switched to this tab while it was being archived; summary saved, tab left open');
+        return;
+      }
       const removed = await chrome.tabs.remove(tab.id).then(() => true, () => false);
       if (!removed) {
         await revertIfStillOpen(tab.id, record.id, 'captured', 'Chrome refused to close this tab; summary saved, tab left open');
@@ -495,21 +520,29 @@ async function processTabArchival(tab, settings, lastActiveTime) {
       notifyTabsClosed();
     } else {
       // Soft discard: Inject sleeping tab indicator 💤 into title before discarding
+      let addedPrefix = false;
       try {
-        await chrome.scripting.executeScript({
+        const [res] = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: () => {
-            if (!document.title.startsWith('💤 ')) {
-              document.title = '💤 ' + document.title;
-            }
+            if (document.title.startsWith('💤 ')) return false;
+            document.title = '💤 ' + document.title;
+            return true;
           }
         });
+        addedPrefix = res?.result === true;
       } catch (titleErr) {
         console.debug('[TabSum] Could not prefix title with sleeping symbol:', titleErr);
       }
       // discard() resolves undefined when Chrome refuses to discard
       const discardedTab = await chrome.tabs.discard(tab.id).catch(() => null);
       if (!discardedTab) {
+        if (addedPrefix) {
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: () => { document.title = document.title.replace(/^💤 /, ''); }
+          }).catch(() => {});
+        }
         await revertIfStillOpen(tab.id, record.id, 'captured', 'Chrome refused to suspend this tab; summary saved, tab left open');
         return;
       }

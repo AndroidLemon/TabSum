@@ -84,7 +84,7 @@ assert.ok(standalone.includes('title: "Modern Vector Databases & Semantic Retrie
 assert.ok(standalone.includes('url: "https://example.com/vector-db"'), 'Frontmatter should include url as a JSON-quoted string');
 assert.ok(standalone.includes('captured_at: "2024-09-11T06:01:40.000Z"'), 'Frontmatter should include valid ISO captured_at');
 assert.ok(standalone.includes('reading_time_minutes: 4'), 'Frontmatter should include numeric reading_time_minutes');
-assert.ok(standalone.includes('tags: [AI, Databases, Search]'), 'Obsidian frontmatter tags must NOT include the # prefix');
+assert.ok(standalone.includes('tags: ["AI", "Databases", "Search"]'), 'Obsidian frontmatter tags must NOT include the # prefix');
 assert.ok(!standalone.includes('"#AI"'), 'Frontmatter tags must not be hash-prefixed');
 assert.ok(standalone.includes('# Modern Vector Databases & Semantic Retrieval'));
 assert.ok(standalone.endsWith('*Captured via TabSum*'));
@@ -93,7 +93,7 @@ console.log('✓ formatStandaloneNote frontmatter verified (no # in frontmatter 
 // Test 4: Tag normalization - strips any pre-existing '#'
 console.log('Testing tag normalization for tags with pre-existing #...');
 const standalone2 = formatStandaloneNote(mockTab2);
-assert.ok(standalone2.includes('tags: [JavaScript, WebDev]'), 'Should strip pre-existing hash and never re-add it');
+assert.ok(standalone2.includes('tags: ["JavaScript", "WebDev"]'), 'Should strip pre-existing hash and never re-add it');
 console.log('✓ Tag normalization verified');
 
 // Test 5: Sparse / missing field fallbacks
@@ -223,6 +223,7 @@ function parseZipLocalEntries(bytes) {
   const entries = [];
   let offset = 0;
   while (offset + 4 <= bytes.length && view.getUint32(offset, true) === 0x04034b50) {
+    if (!(view.getUint16(offset + 6, true) & 0x0800)) throw new Error('ZIP entry lacks the UTF-8 filename flag');
     const crc = view.getUint32(offset + 14, true);
     const compSize = view.getUint32(offset + 18, true);
     const nameLen = view.getUint16(offset + 26, true);
