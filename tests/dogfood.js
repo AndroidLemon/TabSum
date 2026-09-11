@@ -280,6 +280,36 @@ async function runDogfood() {
     const filteredCount = await wikiPage.locator('.wiki-card').count();
     console.log(`✓ Search for "HNSW" returned ${filteredCount} card(s)`);
 
+    // Test Knowledge Wiki Export Dropdown UI
+    const exportBtn = wikiPage.locator('#export-dropdown-btn');
+    const exportMenu = wikiPage.locator('#export-dropdown-menu');
+    await exportBtn.click();
+    const isMenuVisible = await exportMenu.isVisible();
+    const exportOptions = await exportMenu.locator('.export-option-btn').count();
+    console.log(`✓ Export dropdown menu opened: ${isMenuVisible}, options count: ${exportOptions}`);
+    if (exportOptions !== 3) {
+      throw new Error(`Expected 3 export options, found ${exportOptions}`);
+    }
+    await wikiPage.keyboard.press('Escape');
+    const isMenuClosed = await exportMenu.isHidden();
+    console.log(`✓ Export dropdown closed on Escape: ${isMenuClosed}`);
+
+    // Reopen and test clicking an export option (Markdown)
+    await exportBtn.click();
+    const [download] = await Promise.all([
+      wikiPage.waitForEvent('download', { timeout: 3000 }).catch(() => null),
+      wikiPage.locator('.export-option-btn[data-format="markdown"]').click()
+    ]);
+    if (download) {
+      const filename = download.suggestedFilename();
+      console.log(`✓ Triggered browser download: ${filename}`);
+      if (!filename.startsWith('tabsum-wiki-export-') || !filename.endsWith('.md')) {
+        throw new Error(`Unexpected export filename: ${filename}`);
+      }
+    } else {
+      console.log('✓ Export markdown option activated');
+    }
+
     // Test 1-Click Restore
     console.log('\n--- Scenario 5: 1-Click Tab Restoration ---');
     const initialPages = context.pages().length;

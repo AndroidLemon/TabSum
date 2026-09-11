@@ -378,8 +378,116 @@ async function runHardeningTests() {
     assert.strictEqual(afterReopenCount, afterCloseCount + 1, 'Page count must increase by 1 for closed tab');
     console.log('✓ Fallback restore successfully opened fresh tab for closed tab\n');
 
+    // --- TEST 6: Storage Quota Management & LRU Auto-Pruning with Favorite Preservation ---
+    console.log('--- Test 6: Storage Quota Management & LRU Pruning ---');
+    const quotaResult = await helperPage.evaluate(async () => {
+      const {
+        saveArchivedTab,
+        getTabById,
+        enforceStorageQuota,
+        toggleFavoriteTab,
+        getStorageEstimate,
+        clearAllHistory
+      } = await import('/src/storage/db.js');
+
+      await clearAllHistory();
+
+      // Create 5 tabs with varying ages and favorite / pinned flags
+      const t1 = await saveArchivedTab({
+        url: 'https://example.com/quota-1-oldest',
+        title: 'Quota Oldest',
+        capturedAt: 1000,
+        status: 'archived',
+        isFavorite: false,
+        pinned: false
+      });
+
+      const t2 = await saveArchivedTab({
+        url: 'https://example.com/quota-2-favorite',
+        title: 'Quota Favorite',
+        capturedAt: 2000,
+        status: 'archived',
+        isFavorite: true,
+        pinned: false
+      });
+
+      const t3 = await saveArchivedTab({
+        url: 'https://example.com/quota-3-pinned',
+        title: 'Quota Pinned',
+        capturedAt: 3000,
+        status: 'archived',
+        isFavorite: false,
+        pinned: true
+      });
+
+      const t4 = await saveArchivedTab({
+        url: 'https://example.com/quota-4-normal',
+        title: 'Quota Normal 4',
+        capturedAt: 4000,
+        status: 'archived',
+        isFavorite: false,
+        pinned: false
+      });
+
+      const t5 = await saveArchivedTab({
+        url: 'https://example.com/quota-5-newest',
+        title: 'Quota Newest 5',
+        capturedAt: 5000,
+        status: 'archived',
+        isFavorite: false,
+        pinned: false
+      });
+
+      // Set quota to 3. Total tabs = 5. Excess = 2.
+      // Oldest eligible tabs to prune: t1 and t4 (since t2 is favorite and t3 is pinned).
+      const pruneRes = await enforceStorageQuota({
+        maxStoredItems: 3,
+        autoPruneEnabled: true
+      });
+
+      const check1 = await getTabById(t1.id);
+      const check2 = await getTabById(t2.id);
+      const check3 = await getTabById(t3.id);
+      const check4 = await getTabById(t4.id);
+      const check5 = await getTabById(t5.id);
+
+      // Test toggleFavoriteTab
+      const toggledFav = await toggleFavoriteTab(t5.id);
+      const checkToggled = await getTabById(t5.id);
+
+      // Test getStorageEstimate
+      const estimate = await getStorageEstimate();
+
+      return {
+        prunedCount: pruneRes.prunedCount,
+        t1Exists: Boolean(check1),
+        t2Exists: Boolean(check2),
+        t2IsFavorite: check2?.isFavorite,
+        t3Exists: Boolean(check3),
+        t3Pinned: check3?.pinned,
+        t4Exists: Boolean(check4),
+        t5Exists: Boolean(check5),
+        t5ToggledFav: checkToggled?.isFavorite,
+        estimateCount: estimate.itemCount,
+        estimateBytePositive: estimate.byteEstimate > 0
+      };
+    });
+
+    assert.strictEqual(quotaResult.prunedCount, 2, 'Should prune exactly 2 excess tabs');
+    assert.strictEqual(quotaResult.t1Exists, false, 'Oldest normal tab t1 must be pruned');
+    assert.strictEqual(quotaResult.t2Exists, true, 'Favorite tab t2 must be preserved');
+    assert.strictEqual(quotaResult.t2IsFavorite, true, 't2 must retain isFavorite = true');
+    assert.strictEqual(quotaResult.t3Exists, true, 'Pinned tab t3 must be preserved');
+    assert.strictEqual(quotaResult.t3Pinned, true, 't3 must retain pinned = true');
+    assert.strictEqual(quotaResult.t4Exists, false, 'Normal tab t4 must be pruned');
+    assert.strictEqual(quotaResult.t5Exists, true, 'Newest tab t5 must be preserved');
+    assert.strictEqual(quotaResult.t5ToggledFav, true, 'toggleFavoriteTab should successfully mark tab as favorite');
+    assert.strictEqual(quotaResult.estimateCount, 3, 'Estimated item count should be 3');
+    assert.strictEqual(quotaResult.estimateBytePositive, true, 'Storage byte estimate must be positive');
+    console.log('✓ Storage Quota & LRU Pruning verified: preserved favorites and pinned tabs in real IndexedDB\n');
+
     console.log('====================================================');
-    console.log('🎉 ALL 5 TAB HARDENING TESTS PASSED SUCCESSFULLY! 🎉');
+    console.log('🎉 ALL 6 TAB HARDENING TESTS PASSED SUCCESSFULLY! 🎉');
     console.log('====================================================');
 
   } finally {

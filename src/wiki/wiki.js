@@ -20,10 +20,17 @@ let searchQuery = '';
 
 let searchDebounceTimer = null;
 
-document.addEventListener('DOMContentLoaded', async () => {
-  setupEventListeners();
-  await refreshWiki();
-});
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', async () => {
+      setupEventListeners();
+      await refreshWiki();
+    });
+  } else {
+    setupEventListeners();
+    refreshWiki();
+  }
+}
 
 function setupEventListeners() {
   // Search bar with 200ms debounce
@@ -61,18 +68,85 @@ function setupEventListeners() {
     await renderGrid();
   });
 
-  // Export Markdown
-  document.getElementById('export-md-btn').addEventListener('click', async () => {
-    const md = await exportTabs('markdown');
-    const blob = new Blob([md], { type: 'text/markdown' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `TabSum_Knowledge_Export_${new Date().toISOString().slice(0, 10)}.md`;
-    a.click();
-    URL.revokeObjectURL(url);
-    showToast('Exported Wiki to Markdown!');
-  });
+  // Export Dropdown Action
+  const exportDropdownBtn = document.getElementById('export-dropdown-btn');
+  const exportDropdownMenu = document.getElementById('export-dropdown-menu');
+
+  if (exportDropdownBtn && exportDropdownMenu) {
+    const toggleMenu = (shouldOpen) => {
+      const isCurrentlyOpen = !exportDropdownMenu.classList.contains('hidden');
+      const open = shouldOpen !== undefined ? shouldOpen : !isCurrentlyOpen;
+      exportDropdownMenu.classList.toggle('hidden', !open);
+      exportDropdownBtn.setAttribute('aria-expanded', String(open));
+      if (open) {
+        const firstOption = exportDropdownMenu.querySelector('.export-option-btn');
+        if (firstOption) firstOption.focus();
+      }
+    };
+
+    exportDropdownBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleMenu();
+    });
+
+    // Close when clicking outside
+    document.addEventListener('click', (e) => {
+      if (!exportDropdownMenu.classList.contains('hidden')) {
+        if (!exportDropdownBtn.contains(e.target) && !exportDropdownMenu.contains(e.target)) {
+          toggleMenu(false);
+        }
+      }
+    });
+
+    // Keyboard support on dropdown trigger
+    exportDropdownBtn.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        toggleMenu(true);
+      }
+    });
+
+    // Keyboard navigation inside dropdown menu
+    exportDropdownMenu.addEventListener('keydown', (e) => {
+      const options = Array.from(exportDropdownMenu.querySelectorAll('.export-option-btn'));
+      const currentIndex = options.indexOf(document.activeElement);
+
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        toggleMenu(false);
+        exportDropdownBtn.focus();
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        const nextIndex = (currentIndex + 1) % options.length;
+        options[nextIndex].focus();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        const prevIndex = (currentIndex - 1 + options.length) % options.length;
+        options[prevIndex].focus();
+      } else if (e.key === 'Tab') {
+        toggleMenu(false);
+      }
+    });
+
+    // Option buttons click listeners
+    const optionBtns = exportDropdownMenu.querySelectorAll('.export-option-btn');
+    optionBtns.forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const format = btn.dataset.format;
+        toggleMenu(false);
+        await performWikiExport(format);
+      });
+    });
+  }
+
+  // Sidebar footer export button
+  const sidebarExportBtn = document.getElementById('export-md-btn');
+  if (sidebarExportBtn) {
+    sidebarExportBtn.addEventListener('click', async () => {
+      await performWikiExport('markdown');
+    });
+  }
 
   // Settings
   document.getElementById('settings-btn').addEventListener('click', () => {
@@ -317,4 +391,167 @@ function showToast(message) {
   setTimeout(() => {
     toast.classList.add('hidden');
   }, 2500);
+}
+
+/**
+ * Format a single tab record as a Markdown or Obsidian note with YAML frontmatter
+ * @param {Object} tab
+ * @param {'markdown'|'obsidian'} [format='markdown']
+ * @returns {string}
+ */
+export function formatSingleNote(tab, format = 'markdown') {
+  const title = tab.title || 'Untitled Tab';
+  const url = tab.url || '';
+  
+  let capturedAtIso = '';
+  try {
+    const rawDate = tab.capturedAt || tab.captured_at;
+    const d = rawDate ? new Date(rawDate) : new Date();
+    capturedAtIso = isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
+  } catch {
+    capturedAtIso = new Date().toISOString();
+  }
+
+  const readingTime = Number.isFinite(tab.readingTimeMinutes)
+    ? tab.readingTimeMinutes
+    : (Number.isFinite(tab.reading_time_minutes) ? tab.reading_time_minutes : 1);
+
+  const rawTags = (tab.summary?.tags || [])
+    .map(t => String(t).trim().replace(/^#/, ''))
+    .filter(Boolean);
+
+  let tagsFormatted;
+  if (format === 'obsidian') {
+    // For Obsidian: format tags as `#tag` and ensure frontmatter conforms to Obsidian YAML metadata standards
+    tagsFormatted = `[${rawTags.map(t => `"#${t}"`).join(', ')}]`;
+  } else {
+    tagsFormatted = `[${rawTags.map(t => t.includes(' ') ? `"${t}"` : t).join(', ')}]`;
+  }
+
+  const tldr = tab.summary?.tldr || 'No overview available.';
+  const bullets = tab.summary?.bullets || [];
+  const bulletsContent = bullets.length > 0
+    ? bullets.map(b => `- ${b}`).join('\n')
+    : '- No key takeaways recorded';
+
+  return `---
+title: ${JSON.stringify(title)}
+url: ${JSON.stringify(url)}
+captured_at: "${capturedAtIso}"
+reading_time_minutes: ${readingTime}
+tags: ${tagsFormatted}
+---
+# ${title}
+> TL;DR: ${tldr}
+
+## Key Takeaways
+${bulletsContent}
+
+*Captured via TabSum*`;
+}
+
+/**
+ * Trigger browser download using URL.createObjectURL(new Blob(...))
+ * @param {string} content
+ * @param {string} filename
+ * @param {string} mimeType
+ * @returns {boolean}
+ */
+export function triggerDownload(content, filename, mimeType = 'text/plain') {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return false;
+  }
+  try {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+    }, 1000);
+    return true;
+  } catch (err) {
+    console.error('Download trigger failed:', err);
+    return false;
+  }
+}
+
+/**
+ * Export tabs as consolidated Markdown or Obsidian note
+ * @param {Array<Object>|Object} tabs
+ * @param {'markdown'|'obsidian'} [format='markdown']
+ * @returns {string} The formatted markdown string
+ */
+export function exportToMarkdown(tabs, format = 'markdown') {
+  if (format === 'json') {
+    return exportToJSON(tabs);
+  }
+
+  const tabList = Array.isArray(tabs) ? tabs : (tabs ? [tabs] : []);
+  const mdContent = tabList.map(tab => formatSingleNote(tab, format)).join('\n\n');
+  const filename = `tabsum-wiki-export-${Date.now()}.md`;
+
+  triggerDownload(mdContent, filename, 'text/markdown;charset=utf-8');
+
+  return mdContent;
+}
+
+/**
+ * Export tabs as full structured database backup in JSON format
+ * @param {Array<Object>|Object} tabs
+ * @returns {string} The formatted JSON string
+ */
+export function exportToJSON(tabs) {
+  const tabList = Array.isArray(tabs) ? tabs : (tabs ? [tabs] : []);
+  const jsonContent = JSON.stringify(tabList, null, 2);
+  const filename = `tabsum-wiki-export-${Date.now()}.json`;
+
+  triggerDownload(jsonContent, filename, 'application/json;charset=utf-8');
+
+  return jsonContent;
+}
+
+/**
+ * Perform Wiki export for selected format
+ * @param {'markdown'|'obsidian'|'json'} format
+ */
+export async function performWikiExport(format = 'markdown') {
+  let tabs;
+  if (format === 'json') {
+    // Full structured database backup
+    tabs = await getArchivedTabs({ limit: 10000 });
+  } else if (searchQuery || currentTagFilter || currentDomainFilter || currentTimeFilter) {
+    tabs = await getArchivedTabs({
+      query: searchQuery,
+      tag: currentTagFilter,
+      domain: currentDomainFilter,
+      timeRange: currentTimeFilter,
+      limit: 10000
+    });
+    if (!tabs || tabs.length === 0) {
+      tabs = await getArchivedTabs({ limit: 10000 });
+    }
+  } else {
+    tabs = await getArchivedTabs({ limit: 10000 });
+  }
+
+  if (!tabs || tabs.length === 0) {
+    showToast('No summaries to export yet.');
+    return;
+  }
+
+  if (format === 'json') {
+    exportToJSON(tabs);
+    showToast('Exported Wiki Backup (JSON)!');
+  } else if (format === 'obsidian') {
+    exportToMarkdown(tabs, 'obsidian');
+    showToast('Exported Wiki for Obsidian!');
+  } else {
+    exportToMarkdown(tabs, 'markdown');
+    showToast('Exported Wiki to Markdown!');
+  }
 }

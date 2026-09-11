@@ -4,7 +4,7 @@
  * soft suspension / auto-archival, and badge indicators.
  */
 
-import { saveArchivedTab, updateArchivedTabStatus, reconcilePendingRecords, getSettings, extractDomain, getStats } from '../storage/db.js';
+import { saveArchivedTab, updateArchivedTabStatus, reconcilePendingRecords, getSettings, extractDomain, getStats, enforceStorageQuota } from '../storage/db.js';
 import { summarizeContent } from '../ai/summarizer.js';
 
 const ALARM_NAME = 'tabsum-inactivity-sweep';
@@ -310,11 +310,107 @@ async function processTabArchival(tab, settings, lastActiveTime) {
       }
     }
 
+    // Enforce storage quota auto-pruning after finalizing archival
+    await enforceStorageQuota(settings).catch(err => {
+      console.error('[TabSum] Storage quota enforcement error:', err);
+    });
+
     await updateBadge();
   } catch (err) {
     console.error(`[TabSum] Error archiving tab ${tab.id}:`, err);
   }
 }
+
+/**
+ * Extract, summarize, and archive a tab immediately.
+ * Invoked by keyboard shortcut command, UI button, or runtime message.
+ */
+async function archiveActiveTab(activeTab) {
+  if (!activeTab || !activeTab.id) {
+    return { success: false, error: 'No active tab found' };
+  }
+
+  if (!isScriptableUrl(activeTab.url)) {
+    return { success: false, error: 'Cannot extract content from internal browser or extension store pages.' };
+  }
+
+  const settings = await getSettings();
+  const timestamps = await getTimestamps();
+  const lastActive = timestamps[activeTab.id] || Date.now();
+
+  // Extract and archive immediately
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: activeTab.id },
+    files: ['src/content/in-tab-extractor.js']
+  });
+
+  const extracted = results?.[0]?.result;
+  if (!extracted) {
+    return { success: false, error: 'Could not extract content from this page' };
+  }
+
+  const summary = await summarizeContent(extracted, settings);
+  const record = await saveArchivedTab({
+    url: extracted.url || activeTab.url,
+    title: extracted.title || activeTab.title,
+    domain: extracted.domain || extractDomain(activeTab.url),
+    favIconUrl: extracted.favIconUrl || activeTab.favIconUrl,
+    capturedAt: Date.now(),
+    lastActiveAt: lastActive,
+    readingTimeMinutes: extracted.readingTimeMinutes || 1,
+    summary,
+    cleanText: extracted.cleanText || '',
+    wordCount: extracted.wordCount || 0,
+    status: 'archived',
+    meta: extracted.meta
+  });
+
+  // Enforce storage quota auto-pruning after saving tab
+  await enforceStorageQuota(settings).catch(err => {
+    console.error('[TabSum] Storage quota enforcement error:', err);
+  });
+
+  await updateBadge();
+  return { success: true, record };
+}
+
+/**
+ * Handle Global Keyboard Shortcuts
+ */
+async function handleCommand(command) {
+  if (command === 'archive_active_tab') {
+    try {
+      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!activeTab || !activeTab.id) {
+        console.warn('[TabSum] No active tab found for archive_active_tab command');
+        return;
+      }
+
+      const result = await archiveActiveTab(activeTab);
+      if (result?.success && result?.record) {
+        await updateBadge();
+        showArchivedNotification(result.record.title || activeTab.title || 'Page');
+      } else if (!result?.success) {
+        console.warn('[TabSum] Could not archive tab via shortcut:', result?.error);
+      }
+    } catch (err) {
+      console.error('[TabSum] Error executing archive_active_tab command:', err);
+    }
+  } else if (command === '_execute_action') {
+    if (chrome.sidePanel && chrome.sidePanel.open) {
+      try {
+        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (activeTab?.windowId) {
+          await chrome.sidePanel.open({ windowId: activeTab.windowId });
+        }
+      } catch (err) {
+        console.debug('[TabSum] Could not open side panel on command:', err);
+      }
+    }
+  }
+}
+
+chrome.commands.onCommand.addListener(handleCommand);
 
 /**
  * Handle runtime messages from UI surfaces
@@ -324,50 +420,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     try {
       if (message.type === 'ARCHIVE_ACTIVE_TAB') {
         const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!activeTab || !activeTab.id) {
-          sendResponse({ success: false, error: 'No active tab found' });
-          return;
-        }
+        const result = await archiveActiveTab(activeTab);
+        sendResponse(result);
+        return;
+      }
 
-        if (!isScriptableUrl(activeTab.url)) {
-          sendResponse({ success: false, error: 'Cannot extract content from internal browser or extension store pages.' });
-          return;
-        }
-
-        const settings = await getSettings();
-        const timestamps = await getTimestamps();
-        const lastActive = timestamps[activeTab.id] || Date.now();
-
-        // Extract and archive immediately
-        const results = await chrome.scripting.executeScript({
-          target: { tabId: activeTab.id },
-          files: ['src/content/in-tab-extractor.js']
-        });
-
-        const extracted = results?.[0]?.result;
-        if (!extracted) {
-          sendResponse({ success: false, error: 'Could not extract content from this page' });
-          return;
-        }
-
-        const summary = await summarizeContent(extracted, settings);
-        const record = await saveArchivedTab({
-          url: extracted.url || activeTab.url,
-          title: extracted.title || activeTab.title,
-          domain: extracted.domain || extractDomain(activeTab.url),
-          favIconUrl: extracted.favIconUrl || activeTab.favIconUrl,
-          capturedAt: Date.now(),
-          lastActiveAt: lastActive,
-          readingTimeMinutes: extracted.readingTimeMinutes || 1,
-          summary,
-          cleanText: extracted.cleanText || '',
-          wordCount: extracted.wordCount || 0,
-          status: 'archived',
-          meta: extracted.meta
-        });
-
-        await updateBadge();
-        sendResponse({ success: true, record });
+      if (message.type === 'TRIGGER_COMMAND') {
+        await handleCommand(message.command);
+        sendResponse({ success: true });
         return;
       }
 

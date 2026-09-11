@@ -128,6 +128,53 @@
       </div>
     </section>
 
+    <!-- Storage Quota Management & LRU Pruning -->
+    <section class="settings-card" id="storage-quota-section">
+      <h3>Storage Quota Management</h3>
+      <p class="section-desc">Configure local IndexedDB capacity and automatic LRU tab pruning.</p>
+
+      <!-- Live Storage Meter -->
+      <div class="storage-meter-box">
+        <div class="storage-meter-info">
+          <span id="storage-meter-text" class="storage-meter-text">Current Storage: 0 tabs (~0 KB)</span>
+          <span id="storage-quota-subtext" class="storage-quota-subtext">Capacity: 1,000 tabs</span>
+        </div>
+        <div class="storage-progress-track">
+          <div id="storage-progress-bar" class="storage-progress-bar" style="width: 0%"></div>
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-label-group">
+          <label for="max-stored-select">Maximum Stored Tabs</label>
+          <span class="setting-desc">Cap the total number of summaries saved locally in your Knowledge Wiki.</span>
+        </div>
+        <select id="max-stored-select" class="form-select">
+          <option value="250">250</option>
+          <option value="500">500</option>
+          <option value="1000">1,000 (Default)</option>
+          <option value="2500">2,500</option>
+          <option value="0">Unlimited</option>
+        </select>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-label-group">
+          <label for="auto-prune-toggle">Auto-Prune Oldest Tabs When Limit Reached</label>
+          <span class="setting-desc">Automatically prune oldest unpinned and non-favorite tabs when quota is reached.</span>
+        </div>
+        <input type="checkbox" id="auto-prune-toggle" class="form-toggle">
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-label-group">
+          <label>Clear All History</label>
+          <span class="setting-desc">Erase all archived tabs and history from your local browser.</span>
+        </div>
+        <button id="clear-history-btn" class="danger-btn">Clear All History</button>
+      </div>
+    </section>
+
     <!-- Data Management -->
     <section class="settings-card danger-zone">
       <h3>Data & Backups</h3>

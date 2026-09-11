@@ -71,6 +71,27 @@
         </div>
         <div class="header-controls">
           <span id="results-count" class="results-count">0 items</span>
+          <div class="export-dropdown" id="export-dropdown">
+            <button id="export-dropdown-btn" class="export-dropdown-btn" aria-haspopup="true" aria-expanded="false" aria-label="Export Knowledge Wiki" title="Export Knowledge Wiki">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+              <span>Export</span>
+              <svg class="dropdown-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            </button>
+            <div id="export-dropdown-menu" class="export-dropdown-menu hidden" role="menu" aria-label="Export options">
+              <button class="export-option-btn" role="menuitem" data-format="markdown">
+                <span class="option-title">Markdown (.md)</span>
+                <span class="option-desc">Consolidated markdown note</span>
+              </button>
+              <button class="export-option-btn" role="menuitem" data-format="obsidian">
+                <span class="option-title">Obsidian (.md)</span>
+                <span class="option-desc">Formatted note with Obsidian YAML frontmatter</span>
+              </button>
+              <button class="export-option-btn" role="menuitem" data-format="json">
+                <span class="option-title">JSON Backup (.json)</span>
+                <span class="option-desc">Full structured database backup</span>
+              </button>
+            </div>
+          </div>
         </div>
       </header>
 

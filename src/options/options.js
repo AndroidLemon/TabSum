@@ -2,7 +2,7 @@
  * TabSum - Settings & Permissions Controller
  */
 
-import { getSettings, saveSettings, exportTabs } from '../storage/db.js';
+import { getSettings, saveSettings, exportTabs, getStorageEstimate, enforceStorageQuota, clearAllHistory } from '../storage/db.js';
 
 let currentSettings = {};
 
@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   currentSettings = await getSettings();
   populateForm(currentSettings);
   setupListeners();
+  await updateStorageMeter();
   await checkPermissions();
 });
 
@@ -25,6 +26,16 @@ function populateForm(settings) {
   document.getElementById('notif-toggle').checked = Boolean(settings.notificationsEnabled);
   document.getElementById('ai-provider-select').value = settings.aiProvider || 'auto';
   document.getElementById('gemini-api-key').value = settings.geminiApiKey || '';
+
+  const maxStoredSelect = document.getElementById('max-stored-select');
+  if (maxStoredSelect) {
+    maxStoredSelect.value = String(settings.maxStoredItems !== undefined ? settings.maxStoredItems : 1000);
+  }
+
+  const autoPruneToggle = document.getElementById('auto-prune-toggle');
+  if (autoPruneToggle) {
+    autoPruneToggle.checked = settings.autoPruneEnabled !== undefined ? Boolean(settings.autoPruneEnabled) : true;
+  }
 
   toggleApiKeyRow(settings.aiProvider === 'gemini-api');
   renderDomainChips(settings.excludedDomains || []);
@@ -117,15 +128,87 @@ function setupListeners() {
     downloadFile(md, 'TabSum_Wiki_Export.md', 'text/markdown');
   });
 
-  // Clear database
-  document.getElementById('clear-data-btn').addEventListener('click', async () => {
+  // Storage Quota: Maximum Stored Tabs
+  const maxStoredSelect = document.getElementById('max-stored-select');
+  if (maxStoredSelect) {
+    maxStoredSelect.addEventListener('change', async (e) => {
+      currentSettings.maxStoredItems = parseInt(e.target.value, 10);
+      await saveSettings(currentSettings);
+      if (currentSettings.autoPruneEnabled) {
+        await enforceStorageQuota(currentSettings);
+      }
+      await updateStorageMeter();
+      showToast('Maximum stored tabs updated');
+    });
+  }
+
+  // Storage Quota: Auto-prune toggle
+  const autoPruneToggle = document.getElementById('auto-prune-toggle');
+  if (autoPruneToggle) {
+    autoPruneToggle.addEventListener('change', async (e) => {
+      currentSettings.autoPruneEnabled = e.target.checked;
+      await saveSettings(currentSettings);
+      if (currentSettings.autoPruneEnabled) {
+        await enforceStorageQuota(currentSettings);
+      }
+      await updateStorageMeter();
+      showToast('Auto-prune preference saved');
+    });
+  }
+
+  // Clear All History buttons
+  const handleClearHistory = async () => {
     if (confirm('Are you sure you want to delete all stored tab summaries and wiki notes? This action cannot be undone.')) {
-      const req = indexedDB.deleteDatabase('TabSumDB');
-      req.onsuccess = () => {
-        showToast('Knowledge database cleared');
-      };
+      await clearAllHistory();
+      await updateStorageMeter();
+      showToast('All history cleared');
     }
-  });
+  };
+
+  const clearHistoryBtn = document.getElementById('clear-history-btn');
+  if (clearHistoryBtn) {
+    clearHistoryBtn.addEventListener('click', handleClearHistory);
+  }
+
+  const clearDataBtn = document.getElementById('clear-data-btn');
+  if (clearDataBtn) {
+    clearDataBtn.addEventListener('click', handleClearHistory);
+  }
+}
+
+async function updateStorageMeter() {
+  try {
+    const estimate = await getStorageEstimate();
+    const meterEl = document.getElementById('storage-meter-text');
+    if (meterEl) {
+      const count = estimate.itemCount || 0;
+      const bytes = estimate.byteEstimate || 0;
+      const kb = Math.round(bytes / 1024);
+      meterEl.textContent = `Current Storage: ${count} tabs (~${kb} KB)`;
+    }
+
+    const subtextEl = document.getElementById('storage-quota-subtext');
+    if (subtextEl) {
+      if (estimate.quota > 0) {
+        subtextEl.textContent = `Capacity: ${estimate.quota.toLocaleString()} tabs`;
+      } else {
+        subtextEl.textContent = 'Capacity: Unlimited';
+      }
+    }
+
+    const progressBar = document.getElementById('storage-progress-bar');
+    if (progressBar) {
+      if (estimate.quota > 0) {
+        const pct = Math.min(100, Math.round(((estimate.itemCount || 0) / estimate.quota) * 100));
+        progressBar.style.width = `${pct}%`;
+        progressBar.style.backgroundColor = pct > 90 ? 'var(--danger)' : 'var(--accent)';
+      } else {
+        progressBar.style.width = '0%';
+      }
+    }
+  } catch (err) {
+    console.error('Failed to update storage meter:', err);
+  }
 }
 
 async function checkPermissions() {

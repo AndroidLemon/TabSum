@@ -84,6 +84,8 @@ export async function saveArchivedTab(tabData) {
         cleanText: cappedText,
         wordCount: tabData.wordCount || 0,
         status: tabData.status || 'pending', // 'pending' | 'discarded' | 'archived' | 'aborted' | 'restored'
+        isFavorite: Boolean(tabData.isFavorite),
+        pinned: Boolean(tabData.pinned),
         meta: tabData.meta || {}
       };
       const putReq = store.put(record);
@@ -92,7 +94,22 @@ export async function saveArchivedTab(tabData) {
     };
 
     if (tabData.id) {
-      finalizeSave(tabData.id);
+      const getExisting = store.get(tabData.id);
+      getExisting.onsuccess = () => {
+        const existing = getExisting.result;
+        if (existing) {
+          if (tabData.isFavorite === undefined && existing.isFavorite !== undefined) {
+            tabData.isFavorite = existing.isFavorite;
+          }
+          if (tabData.pinned === undefined && existing.pinned !== undefined) {
+            tabData.pinned = existing.pinned;
+          }
+        }
+        finalizeSave(tabData.id);
+      };
+      getExisting.onerror = () => {
+        finalizeSave(tabData.id);
+      };
       return;
     }
 
@@ -104,6 +121,14 @@ export async function saveArchivedTab(tabData) {
       const matches = req.result || [];
       const recent = matches.find(m => (now - m.capturedAt) < ONE_HOUR);
       const idToUse = recent ? recent.id : crypto.randomUUID();
+      if (recent) {
+        if (tabData.isFavorite === undefined && recent.isFavorite !== undefined) {
+          tabData.isFavorite = recent.isFavorite;
+        }
+        if (tabData.pinned === undefined && recent.pinned !== undefined) {
+          tabData.pinned = recent.pinned;
+        }
+      }
       finalizeSave(idToUse);
     };
     req.onerror = () => {
@@ -130,6 +155,7 @@ export async function getArchivedTabs(filters = {}) {
       domain = '',
       timeRange = '',
       status = '',
+      favoriteOnly = false,
       limit = 100,
       offset = 0
     } = filters;
@@ -146,6 +172,12 @@ export async function getArchivedTabs(filters = {}) {
       }
 
       const item = cursor.value;
+
+      // Favorite filter
+      if (favoriteOnly && !item.isFavorite) {
+        cursor.continue();
+        return;
+      }
 
       // Status filter
       if (!status) {
@@ -418,7 +450,9 @@ export const DEFAULT_SETTINGS = {
     'netflix.com'
   ],
   minTextLength: 150,
-  notificationsEnabled: true
+  notificationsEnabled: true,
+  maxStoredItems: 1000,
+  autoPruneEnabled: true
 };
 
 export async function getSettings() {
@@ -441,3 +475,169 @@ export function extractDomain(url) {
     return '';
   }
 }
+
+/**
+ * Toggle favorite status on an archived tab
+ * @param {string} id
+ * @returns {Promise<Object|null>} Updated record or null
+ */
+export async function toggleFavoriteTab(id) {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const store = tx.objectStore(STORE_NAME);
+    const getReq = store.get(id);
+
+    getReq.onsuccess = () => {
+      const record = getReq.result;
+      if (!record) {
+        resolve(null);
+        return;
+      }
+      record.isFavorite = !record.isFavorite;
+      const putReq = store.put(record);
+      putReq.onsuccess = () => resolve(record);
+      putReq.onerror = () => reject(putReq.error);
+    };
+    getReq.onerror = () => reject(getReq.error);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/**
+ * Enforce storage quota by auto-pruning oldest non-favorite, non-pinned archived tabs.
+ * @param {Object} [settings]
+ * @returns {Promise<{ prunedCount: number }>}
+ */
+export async function enforceStorageQuota(settings) {
+  const currentSettings = settings || await getSettings();
+  const maxStoredItems = currentSettings.maxStoredItems !== undefined
+    ? Number(currentSettings.maxStoredItems)
+    : 1000;
+  const autoPruneEnabled = currentSettings.autoPruneEnabled !== undefined
+    ? Boolean(currentSettings.autoPruneEnabled)
+    : true;
+
+  if (!autoPruneEnabled || maxStoredItems <= 0) {
+    return { prunedCount: 0 };
+  }
+
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const store = tx.objectStore(STORE_NAME);
+    const index = store.index('capturedAt');
+
+    const request = index.openCursor(null, 'next');
+    const eligibleIds = [];
+    let totalNonAborted = 0;
+    let prunedCount = 0;
+    let hasResolved = false;
+
+    const safeResolve = (val) => {
+      if (!hasResolved) {
+        hasResolved = true;
+        resolve(val);
+      }
+    };
+
+    request.onsuccess = (event) => {
+      const cursor = event.target.result;
+      if (cursor) {
+        const item = cursor.value;
+        if (item.status !== 'aborted') {
+          totalNonAborted++;
+          if (!item.isFavorite && !item.pinned) {
+            eligibleIds.push(item.id);
+          }
+        }
+        cursor.continue();
+      } else {
+        if (totalNonAborted <= maxStoredItems) {
+          safeResolve({ prunedCount: 0 });
+          return;
+        }
+
+        const excess = totalNonAborted - maxStoredItems;
+        const toDelete = eligibleIds.slice(0, excess);
+        prunedCount = toDelete.length;
+
+        if (prunedCount === 0) {
+          safeResolve({ prunedCount: 0 });
+          return;
+        }
+
+        for (const id of toDelete) {
+          store.delete(id);
+        }
+      }
+    };
+
+    tx.oncomplete = () => {
+      safeResolve({ prunedCount });
+    };
+    request.onerror = () => reject(request.error);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
+/**
+ * Estimate storage usage of archived tabs in IndexedDB
+ * @returns {Promise<{ itemCount: number, byteEstimate: number, quota: number }>}
+ */
+export async function getStorageEstimate() {
+  const settings = await getSettings();
+  const quota = settings.maxStoredItems !== undefined ? Number(settings.maxStoredItems) : 1000;
+  const db = await getDB();
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readonly');
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.openCursor();
+
+    let itemCount = 0;
+    let byteEstimate = 0;
+
+    request.onsuccess = (event) => {
+      const cursor = event.target.result;
+      if (cursor) {
+        const item = cursor.value;
+        if (item.status !== 'aborted') {
+          itemCount++;
+          const serialized = JSON.stringify(item);
+          byteEstimate += typeof TextEncoder !== 'undefined'
+            ? new TextEncoder().encode(serialized).length
+            : serialized.length;
+        }
+        cursor.continue();
+      } else {
+        resolve({
+          itemCount,
+          byteEstimate,
+          quota
+        });
+      }
+    };
+
+    request.onerror = () => reject(request.error);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/**
+ * Clear all archived tab records from IndexedDB
+ */
+export async function clearAllHistory() {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const store = tx.objectStore(STORE_NAME);
+    const req = store.clear();
+    req.onsuccess = () => resolve(true);
+    req.onerror = () => reject(req.error);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export const clearAllTabs = clearAllHistory;

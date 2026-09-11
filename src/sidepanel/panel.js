@@ -101,6 +101,61 @@ function setupEventListeners() {
       await renderFeed();
     }, 200);
   });
+
+  // Pressing Enter in the search bar restores/focuses the top filtered result
+  searchInput.addEventListener('keydown', async (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      clearTimeout(searchDebounceTimer);
+      currentSearchQuery = searchInput.value;
+      await renderFeed();
+      const topRestoreBtn = document.querySelector('#tabs-feed .restore-btn');
+      if (topRestoreBtn) {
+        topRestoreBtn.focus();
+        topRestoreBtn.click();
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      clearTimeout(searchDebounceTimer);
+      const hadQuery = Boolean(searchInput.value || currentSearchQuery);
+      searchInput.value = '';
+      currentSearchQuery = '';
+      searchInput.blur();
+      if (hadQuery) {
+        await renderFeed();
+      }
+    }
+  });
+
+  // Global keyboard shortcuts within the Side Panel
+  document.addEventListener('keydown', (e) => {
+    // Pressing '/' focuses the search bar #search-input (unless already typing in an input or textarea)
+    if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const activeEl = document.activeElement;
+      const isTyping = activeEl && (
+        activeEl.tagName === 'INPUT' ||
+        activeEl.tagName === 'TEXTAREA' ||
+        activeEl.isContentEditable
+      );
+      if (!isTyping) {
+        e.preventDefault();
+        searchInput.focus();
+        searchInput.select();
+      }
+    }
+
+    // Pressing 'Escape' clears search and blurs input
+    if (e.key === 'Escape') {
+      clearTimeout(searchDebounceTimer);
+      const hadQuery = Boolean(searchInput.value || currentSearchQuery);
+      searchInput.value = '';
+      currentSearchQuery = '';
+      searchInput.blur();
+      if (hadQuery) {
+        renderFeed();
+      }
+    }
+  });
 }
 
 async function refreshDashboard() {
