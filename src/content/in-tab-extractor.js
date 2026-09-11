@@ -35,19 +35,23 @@
 
   // 1. Zero-Loss Safety Check: Inspect for dirty form inputs, rich editors, or active media
   function checkIsDirty() {
-    // Only check user-editable text inputs (exclude checkboxes, radios, buttons, search bars, etc.)
-    const textTypes = new Set(['text', 'email', 'url', 'tel', 'password', 'number', '']);
+    // Compare each user-editable control with its page-load default (search bars excluded).
+    // Not checked, because page scripts change them without the user and would block every close:
+    // checkboxes/radios (Wikipedia's menus and appearance prefs are JS-set checkboxes) and
+    // color/range (implicit non-empty defaults look like edits).
+    const valueTypes = new Set(['text', 'email', 'url', 'tel', 'password', 'number', '',
+      'date', 'datetime-local', 'month', 'time', 'week']);
     const inputs = queryAllDeep('input');
     for (const input of inputs) {
       const type = (input.getAttribute('type') || 'text').toLowerCase();
-      if (!textTypes.has(type)) {
-        continue;
-      }
       if (input.readOnly || input.disabled || isSearchInput(input)) {
         continue;
       }
-      if (input.value && input.value.trim() !== '' && input.value !== input.defaultValue) {
+      if (valueTypes.has(type) && input.value && input.value.trim() !== '' && input.value !== input.defaultValue) {
         return { isDirty: true, reason: 'Unsaved form input detected' };
+      }
+      if (type === 'file' && input.files?.length) {
+        return { isDirty: true, reason: 'Selected file upload detected' };
       }
     }
 

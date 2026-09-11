@@ -211,6 +211,25 @@ async function runHybridTests() {
     assert.strictEqual(pureResult.closureTier, 'safe_to_close', 'Pure article must be classified safe_to_close');
     console.log(`✓ Pure reading article classified as: ${pureResult.closureTier} (${pureResult.closureReason})`);
 
+    // 1a': the same article with a date the user picked -> dirty; a JS-ticked checkbox -> still clean
+    const pickedResult = await purePage.evaluate((code) => {
+      const date = document.createElement('input');
+      date.type = 'date';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      document.body.append(date, cb);
+      cb.checked = true;
+      const withCheckbox = eval(code);
+      date.value = '2026-09-11';
+      const withDate = eval(code);
+      date.remove();
+      cb.remove();
+      return { withCheckbox, withDate };
+    }, extractorCode);
+    assert.strictEqual(pickedResult.withCheckbox.isDirty, false, 'Script-ticked checkboxes (menus) must not block closure');
+    assert.strictEqual(pickedResult.withDate.isDirty, true, 'A picked date must mark the page dirty');
+    console.log(`✓ Picked date blocked (${pickedResult.withDate.reason}); menu checkbox ignored`);
+
     // 1b: Article with site search -> safe_to_close (search inputs must NOT block closure)
     const searchPage = await context.newPage();
     await searchPage.goto(`http://localhost:${PORT}/article-with-search`);
@@ -534,7 +553,45 @@ async function runHybridTests() {
     assert.strictEqual(gated.rec.summarySource, 'heuristic');
     assert.strictEqual(gated.rec.closedAt, null, 'Suspended tab must not appear in Closed today');
     console.log('✓ Without an AI summary the article was suspended, not closed');
-    await gatedPage.close();
+
+    // --- Test 7: Hybrid tier 2 closes a tab TabSum suspended once it sits unused for 2x the timeout ---
+    console.log('\n--- Test 7: Hybrid tier 2 (suspended -> closed) ---');
+    // discard() is mocked (see Test 2), so Chrome never flags the tab discarded; report the tabs
+    // TabSum mapped as discarded so the sweep takes the tier-2 branch.
+    await background.evaluate(() => {
+      globalThis.__realTabsQuery = chrome.tabs.query.bind(chrome.tabs);
+      chrome.tabs.query = async (q) => {
+        const { discardedRecords = {} } = await chrome.storage.session.get('discardedRecords');
+        return (await globalThis.__realTabsQuery(q)).map(t => (discardedRecords[t.id] ? { ...t, discarded: true } : t));
+      };
+    });
+    await helperPage.evaluate(async () => {
+      const { saveSettings } = await import(chrome.runtime.getURL('src/storage/db.js'));
+      await saveSettings({ closeRequiresAiSummary: false }); // the Test 6 record is heuristic-only
+    });
+    await background.evaluate(async () => {
+      const tabs = await chrome.tabs.query({});
+      const pure = tabs.find(t => t.url.includes('/pure-article'));
+      const data = await chrome.storage.session.get('tabTimestamps');
+      const timestamps = data.tabTimestamps || {};
+      if (pure) timestamps[pure.id] = Date.now() - 180000; // 3 min > 2 x 1-min timeout
+      await chrome.storage.session.set({ tabTimestamps: timestamps });
+    });
+    await helperPage.evaluate(() => new Promise(resolve => {
+      chrome.runtime.sendMessage({ type: 'TRIGGER_SWEEP_NOW' }, resolve);
+    }));
+    await new Promise(r => setTimeout(r, 1000));
+
+    const tier2 = await helperPage.evaluate(async (id) => {
+      const { getTabById } = await import(chrome.runtime.getURL('src/storage/db.js'));
+      const tabs = await chrome.tabs.query({});
+      return { tabOpen: tabs.some(t => t.url.includes('/pure-article')), rec: await getTabById(id) };
+    }, gated.rec.id);
+    await background.evaluate(() => { chrome.tabs.query = globalThis.__realTabsQuery; });
+    assert.strictEqual(tier2.tabOpen, false, 'Tier 2 must close the long-suspended tab');
+    assert.strictEqual(tier2.rec.status, 'archived', 'Tier 2 record must be archived');
+    assert.ok(tier2.rec.closedAt > 0, 'Tier 2 close must stamp closedAt (Closed today)');
+    console.log('✓ Long-suspended tab was closed by tier 2 and recorded as archived');
 
     // Clean up test tabs
     await bgUntouchedForm.close();

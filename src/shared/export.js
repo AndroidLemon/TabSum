@@ -26,7 +26,7 @@ function toSafeStringArray(value) {
 }
 
 function getTags(tab) {
-  return toSafeStringArray(tab.summary?.tags).map(t => t.replace(/^#/, ''));
+  return toSafeStringArray(tab.summary?.tags).map(t => t.replace(/^#+\s*/, '')).filter(Boolean);
 }
 
 function getBullets(tab) {

@@ -232,7 +232,18 @@ assert.strictEqual(imported.id, 'f-new', 'Unknown id falls back to URL dedupe');
 assert.strictEqual(imported.title, 'Untitled Tab');
 assert.strictEqual(imported.readingTimeMinutes, 1, 'Non-numeric reading time is coerced');
 assert.strictEqual((await getArchivedTabs({ query: 'f.example' })).length > 0, true, 'Search still works after import');
+const restoredImport = await saveArchivedTab({ id: 'imp-2', url: 'https://f.example/imp2', status: 'restored', restoredAt: nowMs - DAY, capturedAt: 'garbage' });
+assert.strictEqual(restoredImport.restoredAt, nowMs - DAY, 'Import keeps restoredAt');
+assert.ok(Number.isFinite(restoredImport.capturedAt), 'Invalid capturedAt falls back to now');
+assert.ok((await getArchivedTabs({ view: 'reopened' })).some(t => t.id === 'imp-2'), 'Imported reopened note stays out of the inbox');
 console.log('✓ Import validation verified');
+
+// Test 14: fading leaves tombstones to purgeDeletedTabs, so Undo still works
+await saveArchivedTab({ id: 'f-tomb', url: 'https://f.example/tomb', status: 'archived', capturedAt: nowMs - 31 * DAY });
+await softDeleteTab('f-tomb');
+await fadeExpiredTabs(fade);
+assert.ok(await restoreDeletedTab('f-tomb'), 'A soft-deleted expired note can still be restored after a fade pass');
+console.log('✓ Fading skips tombstones');
 
 await clearAllHistory();
 console.log('--- Storage Unit Tests Passed Successfully! ---');

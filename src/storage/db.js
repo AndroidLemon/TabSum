@@ -67,6 +67,13 @@ function sanitizeSummary(summary) {
 }
 
 /**
+ * A ms timestamp if v is a positive finite number, else fallback (JSON import can hold anything).
+ */
+function timestamp(v, fallback) {
+  return Number.isFinite(v) && v > 0 ? v : fallback;
+}
+
+/**
  * Local midnight `daysAgo` days back, in ms.
  */
 function startOfDay(daysAgo = 0) {
@@ -112,12 +119,13 @@ export async function saveArchivedTab(tabData) {
         title: (typeof tabData.title === 'string' && tabData.title) || 'Untitled Tab',
         domain: (typeof tabData.domain === 'string' && tabData.domain) || extractDomain(safeUrl),
         favIconUrl: safeFavicon,
-        capturedAt: tabData.capturedAt || Date.now(),
-        lastActiveAt: tabData.lastActiveAt || Date.now(),
+        capturedAt: timestamp(tabData.capturedAt, Date.now()),
+        lastActiveAt: timestamp(tabData.lastActiveAt, Date.now()),
+        restoredAt: timestamp(tabData.restoredAt, undefined), // kept on JSON import; a recapture clears it
         readingTimeMinutes: Math.max(1, Math.round(Number(tabData.readingTimeMinutes)) || 1),
         summary: sanitizeSummary(tabData.summary),
         summarySource: tabData.summarySource || 'heuristic', // 'gemini-api' | 'prompt-api' | 'heuristic'
-        closedAt: tabData.closedAt || null, // set only when TabSum itself closed the tab
+        closedAt: timestamp(tabData.closedAt, null), // set only when TabSum itself closed the tab
         wordCount: tabData.wordCount || 0,
         // 'discarded' (suspended) | 'archived' (closed) | 'restored' (reopened) |
         // 'captured' (summary saved, tab still open: manual archive or Chrome refused to close/suspend)
@@ -400,7 +408,8 @@ export async function fadeExpiredTabs(settings, keepIds = new Set()) {
       const cursor = event.target.result;
       if (!cursor) return;
       const expiry = getExpiry(cursor.value, settings);
-      if (expiry !== null && expiry <= now && !keepIds.has(cursor.key)) {
+      // Tombstones are left to purgeDeletedTabs so Undo keeps working
+      if (expiry !== null && expiry <= now && !keepIds.has(cursor.key) && !cursor.value.deletedAt) {
         cursor.delete();
         textStore.delete(cursor.key);
         fadedCount++;

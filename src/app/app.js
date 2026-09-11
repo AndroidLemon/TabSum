@@ -488,7 +488,7 @@ function toggleExportMenu(open) {
  */
 export async function performExport(format = 'markdown') {
   const tabs = format === 'json'
-    ? await getArchivedTabs({ limit: 100000, includeText: true })
+    ? await getArchivedTabs({ limit: Infinity, includeText: true })
     : await getArchivedTabs({ ...currentFilters(), limit: 10000 });
 
   if (!tabs.length) {

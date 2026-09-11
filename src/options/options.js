@@ -162,7 +162,7 @@ function setupListeners() {
 
   // Export buttons
   document.getElementById('export-json-btn').addEventListener('click', async () => {
-    const tabs = await getArchivedTabs({ limit: 100000, includeText: true });
+    const tabs = await getArchivedTabs({ limit: Infinity, includeText: true });
     const json = exportToJSON(tabs);
     triggerDownload(json, 'TabSum_Backup.json', 'application/json;charset=utf-8');
     showToast('Exported JSON backup');
