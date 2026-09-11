@@ -1,7 +1,7 @@
 /**
  * TabSum - Milestone 7 Keyboard Shortcuts & Navigation Verification Test
  * Verifies manifest command bindings, service worker onCommand listener,
- * notification & badge updates, and side panel keyboard navigation (/, Escape, Enter).
+ * notification & badge updates, and Knowledge Hub keyboard navigation (/, Escape, Enter).
  */
 
 import http from 'node:http';
@@ -11,7 +11,9 @@ import assert from 'node:assert';
 import { chromium } from '@playwright/test';
 
 const PORT = 8892;
-const EXTENSION_PATH = path.resolve('.');
+import { buildTestExtension } from './helpers/test-extension.js';
+
+const EXTENSION_PATH = buildTestExtension();
 const USER_DATA_DIR = path.resolve('./tests/.playwright_user_data_shortcuts');
 
 function createMockServer() {
@@ -104,9 +106,11 @@ async function runShortcutsTests() {
       };
     });
 
-    // Helper page to communicate with background service worker
+    // Helper page to communicate with background service worker: the Knowledge Hub page at
+    // side-panel width (narrow layout)
     const helperPage = await context.newPage();
-    await helperPage.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
+    await helperPage.setViewportSize({ width: 380, height: 800 });
+    await helperPage.goto(`chrome-extension://${extensionId}/src/app/index.html`);
     await helperPage.waitForLoadState('domcontentloaded');
 
     // Ensure testPage is active tab again
@@ -157,9 +161,9 @@ async function runShortcutsTests() {
     assert.strictEqual(archivedRecord.title, 'Keyboard Shortcuts in Modern Web Applications');
     console.log(`✓ Verified record persisted in IndexedDB: "${archivedRecord.title}"\n`);
 
-    // --- TEST 3: Side Panel Keyboard Navigation ---
-    console.log('--- Test 3: Side Panel Keyboard Navigation (/, Escape, Enter) ---');
-    // Refresh sidepanel feed
+    // --- TEST 3: Knowledge Hub Keyboard Navigation ---
+    console.log('--- Test 3: Knowledge Hub Keyboard Navigation (/, Escape, Enter) ---');
+    // Refresh the feed
     await helperPage.evaluate(async () => {
       window.location.reload();
     });
@@ -167,11 +171,11 @@ async function runShortcutsTests() {
 
     // Wait for feed to load the archived card
     await helperPage.waitForSelector('.tab-card', { timeout: 5000 });
-    console.log('✓ Side panel loaded with knowledge cards');
+    console.log('✓ Knowledge Hub loaded with knowledge cards');
 
     // 3a. Pressing '/' focuses search input
     console.log('Testing "/" key focus shortcut...');
-    await helperPage.click('.panel-header');
+    await helperPage.click('.topbar');
     let isFocusedBefore = await helperPage.evaluate(() => document.activeElement.id === 'search-input');
     assert.strictEqual(isFocusedBefore, false, 'Search input should not be focused initially');
 

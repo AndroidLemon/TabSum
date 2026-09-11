@@ -9,7 +9,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
 
-const EXTENSION_PATH = path.resolve('.');
+import { buildTestExtension } from './helpers/test-extension.js';
+
+const EXTENSION_PATH = buildTestExtension();
 const USER_DATA_DIR = path.resolve('./tests/.playwright_user_data_wiki');
 
 const WIKI_PAGES = [
@@ -62,7 +64,7 @@ async function runWikipediaMultiTabTest() {
 
     // 2. Open Extension Sidepanel to interact with storage & DB directly via ES modules
     const sidepanel = await context.newPage();
-    await sidepanel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
+    await sidepanel.goto(`chrome-extension://${extensionId}/src/app/index.html`);
     await sidepanel.waitForLoadState('domcontentloaded');
 
     // Configure aggressive settings for test: 1 minute timeout, 'close' mode
@@ -71,7 +73,7 @@ async function runWikipediaMultiTabTest() {
       await saveSettings({
         timeoutMinutes: 1,
         archiveMode: 'close',
-        notificationsEnabled: false,
+        closeRequiresAiSummary: false, // no AI tier in CI; heuristic summaries must still close
         excludedDomains: []
       });
     });
@@ -233,11 +235,11 @@ async function runWikipediaMultiTabTest() {
     // 9. Verify Wiki Dashboard UI
     console.log('\n📖 Opening TabSum Knowledge Wiki Dashboard UI...');
     const wikiTab = await context.newPage();
-    await wikiTab.goto(`chrome-extension://${extensionId}/src/wiki/index.html`);
+    await wikiTab.goto(`chrome-extension://${extensionId}/src/app/index.html`);
     await wikiTab.waitForLoadState('domcontentloaded');
 
-    await wikiTab.waitForSelector('.wiki-card', { timeout: 8000 });
-    const initialCardCount = await wikiTab.locator('.wiki-card').count();
+    await wikiTab.waitForSelector('.tab-card', { timeout: 8000 });
+    const initialCardCount = await wikiTab.locator('.tab-card').count();
     console.log(`  ✓ Rendered ${initialCardCount} knowledge cards in Wiki dashboard`);
 
     if (initialCardCount < 2) {
@@ -246,22 +248,22 @@ async function runWikipediaMultiTabTest() {
 
     // 10. Test Full-Text Search in Wiki UI
     console.log('\n🔍 Testing interactive full-text search in Wiki UI...');
-    await wikiTab.fill('#wiki-search', 'Shannon');
+    await wikiTab.fill('#search-input', 'Shannon');
     await wikiTab.waitForTimeout(400);
-    const shannonFilterCount = await wikiTab.locator('.wiki-card').count();
+    const shannonFilterCount = await wikiTab.locator('.tab-card').count();
     console.log(`  Filter "Shannon": ${shannonFilterCount} card(s) displayed`);
     if (shannonFilterCount !== 1) throw new Error('Search for "Shannon" should yield exactly 1 card');
 
-    await wikiTab.fill('#wiki-search', 'Telescope');
+    await wikiTab.fill('#search-input', 'Telescope');
     await wikiTab.waitForTimeout(400);
-    const webbFilterCount = await wikiTab.locator('.wiki-card').count();
+    const webbFilterCount = await wikiTab.locator('.tab-card').count();
     console.log(`  Filter "Telescope": ${webbFilterCount} card(s) displayed`);
     if (webbFilterCount !== 1) throw new Error('Search for "Telescope" should yield exactly 1 card');
 
     // Clear search
-    await wikiTab.fill('#wiki-search', '');
+    await wikiTab.fill('#search-input', '');
     await wikiTab.waitForTimeout(400);
-    const clearedCount = await wikiTab.locator('.wiki-card').count();
+    const clearedCount = await wikiTab.locator('.tab-card').count();
     console.log(`  Filter cleared: ${clearedCount} cards displayed`);
 
     // 11. Test 1-Click Tab Restoration
@@ -269,7 +271,7 @@ async function runWikipediaMultiTabTest() {
     const pagesBeforeRestore = context.pages().length;
     
     // Click reopen on the first card
-    const firstRestoreBtn = wikiTab.locator('.restore-action-btn').first();
+    const firstRestoreBtn = wikiTab.locator('.restore-btn').first();
     await firstRestoreBtn.click();
     await wikiTab.waitForTimeout(1500);
 

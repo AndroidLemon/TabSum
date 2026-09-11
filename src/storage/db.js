@@ -3,8 +3,13 @@
  */
 
 const DB_NAME = 'TabSumDB';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_NAME = 'archived_tabs';
+const TEXT_STORE = 'tab_text'; // { id, cleanText } kept apart so list/stat queries never deserialize page text
+const MAX_TEXT_CHARS = 50000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+// Summary sources written by an AI tier; anything else counts as 'heuristic'
+export const AI_SUMMARY_SOURCES = new Set(['gemini-api', 'openai-compatible', 'prompt-api']);
 
 let dbPromise = null;
 
@@ -13,14 +18,18 @@ function getDB() {
     dbPromise = new Promise((resolve, reject) => {
       const request = indexedDB.open(DB_NAME, DB_VERSION);
 
-      request.onupgradeneeded = (event) => {
-        const db = event.target.result;
+      request.onupgradeneeded = () => {
+        const db = request.result;
         if (!db.objectStoreNames.contains(STORE_NAME)) {
           const store = db.createObjectStore(STORE_NAME, { keyPath: 'id' });
           store.createIndex('url', 'url', { unique: false });
           store.createIndex('domain', 'domain', { unique: false });
           store.createIndex('capturedAt', 'capturedAt', { unique: false });
           store.createIndex('status', 'status', { unique: false });
+        }
+        // ponytail: no users yet, so no data migrations; write one when a schema change ships post-launch
+        if (!db.objectStoreNames.contains(TEXT_STORE)) {
+          db.createObjectStore(TEXT_STORE, { keyPath: 'id' });
         }
       };
 
@@ -47,287 +56,309 @@ function isValidHttpUrl(url) {
 }
 
 /**
- * Save an archived tab record into IndexedDB
- * @param {Object} tabData 
+ * Keep only the summary fields the UI renders, as strings (summaries come from LLMs / the page).
+ */
+function sanitizeSummary(summary) {
+  const s = summary && typeof summary === 'object' ? summary : {};
+  const strings = (arr) => (Array.isArray(arr) ? arr.filter(x => typeof x === 'string') : []);
+  return {
+    tldr: typeof s.tldr === 'string' ? s.tldr : '',
+    bullets: strings(s.bullets),
+    tags: strings(s.tags).map(t => t.trim().replace(/^#+/, '')).filter(Boolean)
+  };
+}
+
+/**
+ * A ms timestamp if v is a positive finite number, else fallback (JSON import can hold anything).
+ */
+function timestamp(v, fallback) {
+  return Number.isFinite(v) && v > 0 ? v : fallback;
+}
+
+/**
+ * Local midnight `daysAgo` days back, in ms.
+ */
+function startOfDay(daysAgo = 0) {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - daysAgo);
+  return d.getTime();
+}
+
+/**
+ * Settle a transaction as a promise resolving to getResult() on commit.
+ */
+function onTxDone(tx, resolve, reject, getResult) {
+  tx.oncomplete = () => resolve(getResult());
+  tx.onerror = () => reject(tx.error);
+  tx.onabort = () => reject(tx.error);
+}
+
+/**
+ * Save an archived tab record into IndexedDB.
+ * Dedupes on URL: an existing non-deleted record with the same URL is updated in place
+ * (keeping its id, isFavorite and pinned).
+ * @param {Object} tabData
  */
 export async function saveArchivedTab(tabData) {
   const db = await getDB();
-  
+
   // Scheme validation: strictly allow only http: and https: protocols
   const safeUrl = isValidHttpUrl(tabData.url) ? tabData.url.trim() : '';
   const safeFavicon = isValidHttpUrl(tabData.favIconUrl) ? tabData.favIconUrl.trim() : '';
-
-  // Cap cleanText at 50,000 chars to avoid memory / storage bloat over time
-  const rawText = tabData.cleanText || '';
-  const cappedText = rawText.length > 50000 ? rawText.slice(0, 50000) : rawText;
+  const cleanText = typeof tabData.cleanText === 'string' ? tabData.cleanText.slice(0, MAX_TEXT_CHARS) : '';
 
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const tx = db.transaction([STORE_NAME, TEXT_STORE], 'readwrite');
     const store = tx.objectStore(STORE_NAME);
-    const urlIndex = store.index('url');
+    let record = null;
 
-    const finalizeSave = (targetId) => {
-      const record = {
-        id: targetId,
+    const write = (existing) => {
+      record = {
+        id: existing?.id || tabData.id || crypto.randomUUID(),
         url: safeUrl,
-        title: tabData.title || 'Untitled Tab',
-        domain: tabData.domain || extractDomain(safeUrl),
+        // JSON import feeds arbitrary values here; the UI assumes these types
+        title: (typeof tabData.title === 'string' && tabData.title) || 'Untitled Tab',
+        domain: (typeof tabData.domain === 'string' && tabData.domain) || extractDomain(safeUrl),
         favIconUrl: safeFavicon,
-        capturedAt: tabData.capturedAt || Date.now(),
-        lastActiveAt: tabData.lastActiveAt || Date.now(),
-        readingTimeMinutes: tabData.readingTimeMinutes || 1,
-        summary: tabData.summary || {
-          tldr: '',
-          bullets: [],
-          tags: []
-        },
-        cleanText: cappedText,
+        capturedAt: timestamp(tabData.capturedAt, Date.now()),
+        lastActiveAt: timestamp(tabData.lastActiveAt, Date.now()),
+        restoredAt: timestamp(tabData.restoredAt, undefined), // kept on JSON import; a recapture clears it
+        readingTimeMinutes: Math.max(1, Math.round(Number(tabData.readingTimeMinutes)) || 1),
+        summary: sanitizeSummary(tabData.summary),
+        // Unknown values (JSON import) must not pass the AI-only close gate
+        summarySource: AI_SUMMARY_SOURCES.has(tabData.summarySource) ? tabData.summarySource : 'heuristic',
+        closedAt: timestamp(tabData.closedAt, null), // set only when TabSum itself closed the tab
         wordCount: tabData.wordCount || 0,
-        status: tabData.status || 'pending', // 'pending' | 'discarded' | 'archived' | 'aborted' | 'restored'
+        // 'discarded' (suspended) | 'archived' (closed) | 'restored' (reopened) |
+        // 'captured' (summary saved, tab still open: manual archive or Chrome refused to close/suspend)
+        status: tabData.status || 'archived',
         closureTier: tabData.closureTier || 'suspend_only',
         closureReason: tabData.closureReason || '',
-        isFavorite: Boolean(tabData.isFavorite),
-        pinned: Boolean(tabData.pinned),
+        isFavorite: Boolean(tabData.isFavorite ?? existing?.isFavorite),
+        pinned: Boolean(tabData.pinned ?? existing?.pinned),
         meta: tabData.meta || {}
       };
-      const putReq = store.put(record);
-      putReq.onsuccess = () => resolve(record);
-      putReq.onerror = () => reject(putReq.error);
+      store.put(record);
+      tx.objectStore(TEXT_STORE).put({ id: record.id, cleanText });
+    };
+
+    const writeDedupedByUrl = () => {
+      if (!safeUrl) return write(null); // never dedupe records without a URL together
+      const req = store.index('url').getAll(safeUrl);
+      req.onsuccess = () => write(req.result.find(r => !r.deletedAt));
     };
 
     if (tabData.id) {
-      const getExisting = store.get(tabData.id);
-      getExisting.onsuccess = () => {
-        const existing = getExisting.result;
-        if (existing) {
-          if (tabData.isFavorite === undefined && existing.isFavorite !== undefined) {
-            tabData.isFavorite = existing.isFavorite;
-          }
-          if (tabData.pinned === undefined && existing.pinned !== undefined) {
-            tabData.pinned = existing.pinned;
-          }
-        }
-        finalizeSave(tabData.id);
-      };
-      getExisting.onerror = () => {
-        finalizeSave(tabData.id);
-      };
-      return;
+      // An unknown id (e.g. JSON import) still dedupes on URL
+      const req = store.get(tabData.id);
+      req.onsuccess = () => (req.result ? write(req.result) : writeDedupedByUrl());
+    } else {
+      writeDedupedByUrl();
     }
 
-    // Deduplication: check if record with identical URL was saved in the past hour
-    const now = Date.now();
-    const ONE_HOUR = 60 * 60 * 1000;
-    const req = urlIndex.getAll(safeUrl);
-    req.onsuccess = () => {
-      const matches = req.result || [];
-      const recent = matches.find(m => (now - m.capturedAt) < ONE_HOUR);
-      const idToUse = recent ? recent.id : crypto.randomUUID();
-      if (recent) {
-        if (tabData.isFavorite === undefined && recent.isFavorite !== undefined) {
-          tabData.isFavorite = recent.isFavorite;
-        }
-        if (tabData.pinned === undefined && recent.pinned !== undefined) {
-          tabData.pinned = recent.pinned;
-        }
-      }
-      finalizeSave(idToUse);
-    };
-    req.onerror = () => {
-      finalizeSave(crypto.randomUUID());
-    };
+    onTxDone(tx, resolve, reject, () => record);
   });
 }
 
 /**
- * Query archived tabs with full-text keyword search and filters
+ * Query archived tabs with keyword search and filters.
+ * Records come back without cleanText unless `includeText: true`; soft-deleted records
+ * are hidden unless `includeDeleted: true`.
  */
 export async function getArchivedTabs(filters = {}) {
   const db = await getDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readonly');
-    const store = tx.objectStore(STORE_NAME);
-    const index = store.index('capturedAt');
+  const {
+    query = '',
+    tag = '',
+    domain = '',
+    timeRange = '',
+    status = '',
+    favoriteOnly = false,
+    closedSince = 0, // only records TabSum closed at/after this time
+    view = '', // 'inbox' (never reopened) | 'reopened' | '' (all)
+    includeDeleted = false,
+    includeText = false,
+    sortBy = 'newest', // 'newest' | 'oldest' | 'reading-time-asc' | 'reading-time-desc' | 'title-asc' | 'domain'
+    limit = 100,
+    offset = 0
+  } = filters;
 
-    const {
-      query = '',
-      tag = '',
-      domain = '',
-      timeRange = '',
-      status = '',
-      favoriteOnly = false,
-      sortBy = 'newest', // 'newest' | 'oldest' | 'reading-time-asc' | 'reading-time-desc' | 'title-asc' | 'domain'
-      limit = 100,
-      offset = 0
-    } = filters;
+  const normalizedQuery = query.toLowerCase().trim();
+  const needsText = Boolean(normalizedQuery) || includeText;
+  const fadeSettings = sortBy === 'expiring-soon' ? await getSettings() : null;
+  const todayStart = startOfDay(0);
+  const yesterdayStart = startOfDay(1);
+  const weekAgo = Date.now() - 7 * DAY_MS;
+
+  const passesFilters = (item) => {
+    if (item.deletedAt && !includeDeleted) return false;
+    if (favoriteOnly && !item.isFavorite) return false;
+    if (status && item.status !== status) return false;
+    if (closedSince && !(item.closedAt >= closedSince)) return false;
+    if (view === 'inbox' && item.restoredAt) return false;
+    if (view === 'reopened' && !item.restoredAt) return false;
+    if (domain && item.domain !== domain) return false;
+    if (tag && !(item.summary?.tags || []).some(t => t.toLowerCase() === tag.toLowerCase())) return false;
+    if (timeRange === 'today' && item.capturedAt < todayStart) return false;
+    if (timeRange === 'yesterday' && (item.capturedAt < yesterdayStart || item.capturedAt >= todayStart)) return false;
+    if (timeRange === 'week' && item.capturedAt < weekAgo) return false;
+    return true;
+  };
+
+  const metaMatches = (item) =>
+    item.title?.toLowerCase().includes(normalizedQuery) ||
+    item.url?.toLowerCase().includes(normalizedQuery) ||
+    item.summary?.tldr?.toLowerCase().includes(normalizedQuery) ||
+    (item.summary?.bullets || []).some(b => b.toLowerCase().includes(normalizedQuery)) ||
+    (item.summary?.tags || []).some(t => t.toLowerCase().includes(normalizedQuery));
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(needsText ? [STORE_NAME, TEXT_STORE] : STORE_NAME, 'readonly');
+    const store = tx.objectStore(STORE_NAME);
 
     // Use native index cursor direction for temporal sorting
     const isCustomSort = sortBy !== 'newest' && sortBy !== 'oldest';
     const direction = sortBy === 'oldest' ? 'next' : 'prev';
-    const request = index.openCursor(null, direction);
+    const request = store.index('capturedAt').openCursor(null, direction);
 
     const matches = [];
-    const normalizedQuery = query.toLowerCase().trim();
-    const now = Date.now();
+    let results = [];
     let skipped = 0;
 
-    const finalizeResults = () => {
-      if (!isCustomSort) {
-        resolve(matches);
-        return;
+    const finish = () => {
+      results = matches;
+      if (isCustomSort) {
+        if (sortBy === 'reading-time-asc') {
+          matches.sort((a, b) => (a.readingTimeMinutes || 1) - (b.readingTimeMinutes || 1));
+        } else if (sortBy === 'reading-time-desc') {
+          matches.sort((a, b) => (b.readingTimeMinutes || 1) - (a.readingTimeMinutes || 1));
+        } else if (sortBy === 'title-asc') {
+          matches.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+        } else if (sortBy === 'domain') {
+          matches.sort((a, b) => (a.domain || '').localeCompare(b.domain || ''));
+        } else if (sortBy === 'expiring-soon') {
+          const expiry = (t) => getExpiry(t, fadeSettings) ?? Infinity; // never-fading notes last
+          matches.sort((a, b) => (expiry(a) === expiry(b) ? 0 : expiry(a) - expiry(b)));
+        }
+        results = matches.slice(offset, offset + limit);
       }
-
-      if (sortBy === 'reading-time-asc') {
-        matches.sort((a, b) => (a.readingTimeMinutes || 1) - (b.readingTimeMinutes || 1));
-      } else if (sortBy === 'reading-time-desc') {
-        matches.sort((a, b) => (b.readingTimeMinutes || 1) - (a.readingTimeMinutes || 1));
-      } else if (sortBy === 'title-asc') {
-        matches.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
-      } else if (sortBy === 'domain') {
-        matches.sort((a, b) => (a.domain || '').localeCompare(b.domain || ''));
+      if (includeText) {
+        const textStore = tx.objectStore(TEXT_STORE);
+        for (const item of results) {
+          const req = textStore.get(item.id);
+          req.onsuccess = () => { item.cleanText = req.result?.cleanText || ''; };
+        }
       }
-
-      resolve(matches.slice(offset, offset + limit));
     };
 
-    request.onsuccess = (event) => {
-      const cursor = event.target.result;
-      if (!cursor) {
-        finalizeResults();
-        return;
-      }
-
-      const item = cursor.value;
-
-      // Favorite filter
-      if (favoriteOnly && !item.isFavorite) {
-        cursor.continue();
-        return;
-      }
-
-      // Status filter
-      if (!status) {
-        if (item.status === 'aborted' || item.status === 'pending') {
-          cursor.continue();
-          return;
-        }
-      } else if (item.status !== status) {
-        cursor.continue();
-        return;
-      }
-
-      // Domain filter
-      if (domain && item.domain !== domain) {
-        cursor.continue();
-        return;
-      }
-
-      // Tag filter
-      if (tag) {
-        const itemTags = (item.summary?.tags || []).map(t => t.toLowerCase());
-        if (!itemTags.includes(tag.toLowerCase())) {
-          cursor.continue();
-          return;
-        }
-      }
-
-      // Time range filter
-      if (timeRange) {
-        const diffHours = (now - item.capturedAt) / (1000 * 60 * 60);
-        if (timeRange === 'today' && diffHours > 24) {
-          cursor.continue();
-          return;
-        }
-        if (timeRange === 'yesterday' && (diffHours <= 24 || diffHours > 48)) {
-          cursor.continue();
-          return;
-        }
-        if (timeRange === 'week' && diffHours > 24 * 7) {
-          cursor.continue();
-          return;
-        }
-      }
-
-      // Keyword search across title, tldr, bullets, tags, and cleanText
-      if (normalizedQuery) {
-        const titleMatch = item.title?.toLowerCase().includes(normalizedQuery);
-        const urlMatch = item.url?.toLowerCase().includes(normalizedQuery);
-        const tldrMatch = item.summary?.tldr?.toLowerCase().includes(normalizedQuery);
-        const bulletsMatch = (item.summary?.bullets || []).some(b => b.toLowerCase().includes(normalizedQuery));
-        const tagsMatch = (item.summary?.tags || []).some(t => t.toLowerCase().includes(normalizedQuery));
-        const textMatch = item.cleanText?.toLowerCase().includes(normalizedQuery);
-
-        if (!titleMatch && !urlMatch && !tldrMatch && !bulletsMatch && !tagsMatch && !textMatch) {
-          cursor.continue();
-          return;
-        }
-      }
-
-      // For standard index-ordered queries, stream and terminate early when limit is satisfied
+    const take = (item, cursor) => {
       if (!isCustomSort) {
+        // Index-ordered queries stream and stop early once the page is full
         if (skipped < offset) {
           skipped++;
           cursor.continue();
           return;
         }
-
         matches.push(item);
         if (matches.length >= limit) {
-          resolve(matches);
+          finish();
           return;
         }
-        cursor.continue();
-        return;
+      } else {
+        matches.push(item);
       }
-
-      // For in-memory sorted criteria (reading time, title, domain), accumulate matches
-      matches.push(item);
       cursor.continue();
     };
 
-    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) {
+        finish();
+        return;
+      }
+      const item = cursor.value;
+      if (!passesFilters(item)) {
+        cursor.continue();
+        return;
+      }
+      if (!normalizedQuery || metaMatches(item)) {
+        take(item, cursor);
+        return;
+      }
+      // Fall back to the page text only when metadata didn't match
+      const textReq = tx.objectStore(TEXT_STORE).get(item.id);
+      textReq.onsuccess = () => {
+        if (textReq.result?.cleanText?.toLowerCase().includes(normalizedQuery)) {
+          take(item, cursor);
+        } else {
+          cursor.continue();
+        }
+      };
+    };
+
+    onTxDone(tx, resolve, reject, () => results);
   });
 }
 
 /**
- * Get a single tab by ID
+ * Get a single tab by ID, including its cleanText
  */
 export async function getTabById(id) {
   const db = await getDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readonly');
-    const store = tx.objectStore(STORE_NAME);
-    const req = store.get(id);
-    req.onsuccess = () => resolve(req.result || null);
-    req.onerror = () => reject(req.error);
+    const tx = db.transaction([STORE_NAME, TEXT_STORE], 'readonly');
+    const recordReq = tx.objectStore(STORE_NAME).get(id);
+    const textReq = tx.objectStore(TEXT_STORE).get(id);
+    onTxDone(tx, resolve, reject, () => (
+      recordReq.result ? { ...recordReq.result, cleanText: textReq.result?.cleanText || '' } : null
+    ));
   });
 }
 
 /**
- * Update tab status (e.g. 'restored', 'archived', 'discarded', 'aborted')
+ * Read-modify-write one record. Resolves the updated record or null if missing.
  */
-export async function updateArchivedTabStatus(id, status) {
+async function updateRecord(id, mutate) {
   const db = await getDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite');
     const store = tx.objectStore(STORE_NAME);
-    const getReq = store.get(id);
-
-    getReq.onsuccess = () => {
-      const record = getReq.result;
-      if (!record) {
-        resolve(null);
-        return;
-      }
-      record.status = status;
-      if (status === 'restored') {
-        record.restoredAt = Date.now();
-      }
-      const putReq = store.put(record);
-      putReq.onsuccess = () => resolve(record);
-      putReq.onerror = () => reject(putReq.error);
+    let record = null;
+    const req = store.get(id);
+    req.onsuccess = () => {
+      if (!req.result) return;
+      record = req.result;
+      mutate(record);
+      store.put(record);
     };
-    getReq.onerror = () => reject(getReq.error);
+    onTxDone(tx, resolve, reject, () => record);
+  });
+}
+
+/**
+ * Update tab status (e.g. 'restored', 'archived', 'discarded')
+ */
+export async function updateArchivedTabStatus(id, status, reason) {
+  return updateRecord(id, (record) => {
+    record.status = status;
+    if (reason) record.closureReason = reason;
+    if (status === 'restored') {
+      record.restoredAt = Date.now();
+    }
+    if (status !== 'archived') {
+      record.closedAt = null; // the tab is open again (or never got closed)
+    }
+  });
+}
+
+/**
+ * Mark a record as archived because TabSum closed its tab (feeds "Closed today").
+ */
+export async function markTabClosed(id) {
+  return updateRecord(id, (record) => {
+    record.status = 'archived';
+    record.closedAt = Date.now();
   });
 }
 
@@ -336,45 +367,97 @@ export async function updateTabStatus(id, status) {
 }
 
 /**
- * Reconcile orphan pending records from interrupted service worker sweeps
+ * Soft-delete (tombstone) a tab. Hidden from queries until restored or purged.
  */
-export async function reconcilePendingRecords(maxAgeMs = 5 * 60 * 1000) {
-  const db = await getDB();
-  const now = Date.now();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    const store = tx.objectStore(STORE_NAME);
-    const statusIndex = store.index('status');
-    const req = statusIndex.getAll('pending');
-
-    req.onsuccess = () => {
-      const pendingList = req.result || [];
-      let reconciledCount = 0;
-      for (const record of pendingList) {
-        if (now - record.capturedAt > maxAgeMs) {
-          record.status = 'aborted';
-          record.abortReason = 'Worker restarted or timed out during archival';
-          store.put(record);
-          reconciledCount++;
-        }
-      }
-      resolve({ reconciledCount });
-    };
-    req.onerror = () => reject(req.error);
+export async function softDeleteTab(id) {
+  return updateRecord(id, (record) => {
+    record.deletedAt = Date.now();
   });
 }
 
 /**
- * Delete an archived tab
+ * Undo a soft delete
+ */
+export async function restoreDeletedTab(id) {
+  return updateRecord(id, (record) => {
+    delete record.deletedAt;
+  });
+}
+
+/**
+ * When a note fades (ms timestamp), or null if it never does. Unopened notes fade
+ * fadeUnopenedDays after capture; reopened notes fadeReopenedDays after the last reopen.
+ * Starred notes and a 0-day setting never fade.
+ */
+export function getExpiry(record, settings = {}) {
+  if (record.isFavorite) return null;
+  const days = record.restoredAt ? settings.fadeReopenedDays : settings.fadeUnopenedDays;
+  if (!days) return null;
+  return (record.restoredAt || record.capturedAt) + days * DAY_MS;
+}
+
+/**
+ * Delete notes past their fade date. Skips keepIds (records of tabs TabSum suspended that
+ * are still open): hybrid mode's second tier needs that record to close the tab.
+ */
+export async function fadeExpiredTabs(settings, keepIds = new Set()) {
+  const db = await getDB();
+  const now = Date.now();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_NAME, TEXT_STORE], 'readwrite');
+    const textStore = tx.objectStore(TEXT_STORE);
+    let fadedCount = 0;
+    tx.objectStore(STORE_NAME).openCursor().onsuccess = (event) => {
+      const cursor = event.target.result;
+      if (!cursor) return;
+      const expiry = getExpiry(cursor.value, settings);
+      // Tombstones are left to purgeDeletedTabs so Undo keeps working
+      if (expiry !== null && expiry <= now && !keepIds.has(cursor.key) && !cursor.value.deletedAt) {
+        cursor.delete();
+        textStore.delete(cursor.key);
+        fadedCount++;
+      }
+      cursor.continue();
+    };
+    onTxDone(tx, resolve, reject, () => ({ fadedCount }));
+  });
+}
+
+/**
+ * Hard-delete tombstones older than the cutoff.
+ */
+export async function purgeDeletedTabs(olderThanMs = 60 * 60 * 1000) {
+  const db = await getDB();
+  const cutoff = Date.now() - olderThanMs;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_NAME, TEXT_STORE], 'readwrite');
+    const textStore = tx.objectStore(TEXT_STORE);
+    let purgedCount = 0;
+    tx.objectStore(STORE_NAME).openCursor().onsuccess = (event) => {
+      const cursor = event.target.result;
+      if (!cursor) return;
+      const item = cursor.value;
+      if (item.deletedAt && item.deletedAt <= cutoff) {
+        cursor.delete();
+        textStore.delete(item.id);
+        purgedCount++;
+      }
+      cursor.continue();
+    };
+    onTxDone(tx, resolve, reject, () => ({ purgedCount }));
+  });
+}
+
+/**
+ * Permanently delete an archived tab
  */
 export async function deleteArchivedTab(id) {
   const db = await getDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    const store = tx.objectStore(STORE_NAME);
-    const req = store.delete(id);
-    req.onsuccess = () => resolve(true);
-    req.onerror = () => reject(req.error);
+    const tx = db.transaction([STORE_NAME, TEXT_STORE], 'readwrite');
+    tx.objectStore(STORE_NAME).delete(id);
+    tx.objectStore(TEXT_STORE).delete(id);
+    onTxDone(tx, resolve, reject, () => true);
   });
 }
 
@@ -415,50 +498,18 @@ export async function getAllDomains() {
 }
 
 /**
- * Get dashboard stats (excluding pending and aborted tabs)
+ * Get dashboard stats (excluding soft-deleted tabs).
+ * "today" means since local midnight.
  */
 export async function getStats() {
-  const tabs = await getArchivedTabs({ limit: 10000 });
-  const now = Date.now();
-  const dayAgo = now - 24 * 60 * 60 * 1000;
-  const todayTabs = tabs.filter(t => t.capturedAt >= dayAgo);
+  const tabs = await getArchivedTabs({ limit: Infinity });
+  const todayStart = startOfDay(0);
   return {
     total: tabs.length,
-    today: todayTabs.length,
+    today: tabs.filter(t => t.capturedAt >= todayStart).length,
+    favorites: tabs.filter(t => t.isFavorite).length,
     totalReadingMinutes: tabs.reduce((acc, t) => acc + (t.readingTimeMinutes || 2), 0)
   };
-}
-
-/**
- * Export all tabs in JSON or Markdown format
- */
-export async function exportTabs(format = 'json') {
-  const tabs = await getArchivedTabs({ limit: 10000 });
-  if (format === 'json') {
-    return JSON.stringify(tabs, null, 2);
-  }
-
-  // Markdown Wiki export
-  let md = `# TabSum Knowledge Wiki Export\n*Exported on ${new Date().toLocaleString()}*\n\n`;
-  for (const tab of tabs) {
-    md += `## [${tab.title}](${tab.url})\n`;
-    md += `*Captured: ${new Date(tab.capturedAt).toLocaleDateString()} | Domain: ${tab.domain} | Est. Read: ${tab.readingTimeMinutes} min*\n\n`;
-    if (tab.summary?.tldr) {
-      md += `**TL;DR**: ${tab.summary.tldr}\n\n`;
-    }
-    if (tab.summary?.bullets?.length) {
-      md += `### Key Takeaways:\n`;
-      for (const bullet of tab.summary.bullets) {
-        md += `- ${bullet}\n`;
-      }
-      md += `\n`;
-    }
-    if (tab.summary?.tags?.length) {
-      md += `**Tags**: ${tab.summary.tags.map(t => `#${t.replace(/^#/, '')}`).join(' ')}\n\n`;
-    }
-    md += `---\n\n`;
-  }
-  return md;
 }
 
 /**
@@ -468,10 +519,11 @@ export const DEFAULT_SETTINGS = {
   timeoutMinutes: 60,
   archiveMode: 'hybrid', // 'hybrid' (smart adaptive) | 'discard' (soft suspension) | 'close' (auto-close)
   ignorePinnedTabs: true, // Never archive or suspend pinned tabs unless explicitly allowed
-  deferDeletionsUntilClose: false, // Deletions are not finalized until the dashboard or sidebar is closed
-  closeSidebarOnOpenDashboard: true, // Automatically close sidebar when opening full wiki dashboard
   aiProvider: 'auto',     // 'auto' | 'prompt-api' | 'heuristic' | 'gemini-api'
   geminiApiKey: '',
+  openaiBaseUrl: 'http://localhost:11434/v1', // any OpenAI-compatible server; Ollama's default shown
+  openaiModel: '',
+  openaiApiKey: '', // optional; most local servers ignore it
   excludedDomains: [
     'mail.google.com',
     'docs.google.com',
@@ -486,9 +538,9 @@ export const DEFAULT_SETTINGS = {
     'netflix.com'
   ],
   minTextLength: 150,
-  notificationsEnabled: true,
-  maxStoredItems: 1000,
-  autoPruneEnabled: true
+  closeRequiresAiSummary: true, // without an AI-written summary, suspend instead of closing
+  fadeUnopenedDays: 30, // unstarred, never-reopened notes are deleted this long after capture (0 = never)
+  fadeReopenedDays: 7 // unstarred reopened notes are deleted this long after the last reopen (0 = never)
 };
 
 export async function getSettings() {
@@ -518,146 +570,47 @@ export function extractDomain(url) {
  * @returns {Promise<Object|null>} Updated record or null
  */
 export async function toggleFavoriteTab(id) {
-  const db = await getDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    const store = tx.objectStore(STORE_NAME);
-    const getReq = store.get(id);
-
-    getReq.onsuccess = () => {
-      const record = getReq.result;
-      if (!record) {
-        resolve(null);
-        return;
-      }
-      record.isFavorite = !record.isFavorite;
-      const putReq = store.put(record);
-      putReq.onsuccess = () => resolve(record);
-      putReq.onerror = () => reject(putReq.error);
-    };
-    getReq.onerror = () => reject(getReq.error);
-    tx.onerror = () => reject(tx.error);
+  return updateRecord(id, (record) => {
+    record.isFavorite = !record.isFavorite;
   });
 }
 
 /**
- * Enforce storage quota by auto-pruning oldest non-favorite, non-pinned archived tabs.
- * @param {Object} [settings]
- * @returns {Promise<{ prunedCount: number }>}
- */
-export async function enforceStorageQuota(settings) {
-  const currentSettings = settings || await getSettings();
-  const maxStoredItems = currentSettings.maxStoredItems !== undefined
-    ? Number(currentSettings.maxStoredItems)
-    : 1000;
-  const autoPruneEnabled = currentSettings.autoPruneEnabled !== undefined
-    ? Boolean(currentSettings.autoPruneEnabled)
-    : true;
-
-  if (!autoPruneEnabled || maxStoredItems <= 0) {
-    return { prunedCount: 0 };
-  }
-
-  const db = await getDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    const store = tx.objectStore(STORE_NAME);
-    const index = store.index('capturedAt');
-
-    const request = index.openCursor(null, 'next');
-    const eligibleIds = [];
-    let totalNonAborted = 0;
-    let prunedCount = 0;
-    let hasResolved = false;
-
-    const safeResolve = (val) => {
-      if (!hasResolved) {
-        hasResolved = true;
-        resolve(val);
-      }
-    };
-
-    request.onsuccess = (event) => {
-      const cursor = event.target.result;
-      if (cursor) {
-        const item = cursor.value;
-        if (item.status !== 'aborted') {
-          totalNonAborted++;
-          if (!item.isFavorite && !item.pinned) {
-            eligibleIds.push(item.id);
-          }
-        }
-        cursor.continue();
-      } else {
-        if (totalNonAborted <= maxStoredItems) {
-          safeResolve({ prunedCount: 0 });
-          return;
-        }
-
-        const excess = totalNonAborted - maxStoredItems;
-        const toDelete = eligibleIds.slice(0, excess);
-        prunedCount = toDelete.length;
-
-        if (prunedCount === 0) {
-          safeResolve({ prunedCount: 0 });
-          return;
-        }
-
-        for (const id of toDelete) {
-          store.delete(id);
-        }
-      }
-    };
-
-    tx.oncomplete = () => {
-      safeResolve({ prunedCount });
-    };
-    request.onerror = () => reject(request.error);
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
-  });
-}
-
-/**
- * Estimate storage usage of archived tabs in IndexedDB
- * @returns {Promise<{ itemCount: number, byteEstimate: number, quota: number }>}
+ * Estimate storage usage of archived tabs (records + text) in IndexedDB
+ * @returns {Promise<{ itemCount: number, byteEstimate: number }>}
  */
 export async function getStorageEstimate() {
-  const settings = await getSettings();
-  const quota = settings.maxStoredItems !== undefined ? Number(settings.maxStoredItems) : 1000;
   const db = await getDB();
+  const encoder = new TextEncoder();
+  const sizeOf = (value) => encoder.encode(JSON.stringify(value)).length;
 
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readonly');
-    const store = tx.objectStore(STORE_NAME);
-    const request = store.openCursor();
-
-    let itemCount = 0;
+    const tx = db.transaction([STORE_NAME, TEXT_STORE], 'readonly');
+    const liveIds = new Set();
     let byteEstimate = 0;
 
-    request.onsuccess = (event) => {
+    tx.objectStore(STORE_NAME).openCursor().onsuccess = (event) => {
       const cursor = event.target.result;
       if (cursor) {
         const item = cursor.value;
-        if (item.status !== 'aborted') {
-          itemCount++;
-          const serialized = JSON.stringify(item);
-          byteEstimate += typeof TextEncoder !== 'undefined'
-            ? new TextEncoder().encode(serialized).length
-            : serialized.length;
+        if (!item.deletedAt) {
+          liveIds.add(item.id);
+          byteEstimate += sizeOf(item);
         }
         cursor.continue();
-      } else {
-        resolve({
-          itemCount,
-          byteEstimate,
-          quota
-        });
+        return;
       }
+      tx.objectStore(TEXT_STORE).openCursor().onsuccess = (textEvent) => {
+        const textCursor = textEvent.target.result;
+        if (!textCursor) return;
+        if (liveIds.has(textCursor.key)) {
+          byteEstimate += sizeOf(textCursor.value);
+        }
+        textCursor.continue();
+      };
     };
 
-    request.onerror = () => reject(request.error);
-    tx.onerror = () => reject(tx.error);
+    onTxDone(tx, resolve, reject, () => ({ itemCount: liveIds.size, byteEstimate }));
   });
 }
 
@@ -667,12 +620,10 @@ export async function getStorageEstimate() {
 export async function clearAllHistory() {
   const db = await getDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    const store = tx.objectStore(STORE_NAME);
-    const req = store.clear();
-    req.onsuccess = () => resolve(true);
-    req.onerror = () => reject(req.error);
-    tx.onerror = () => reject(tx.error);
+    const tx = db.transaction([STORE_NAME, TEXT_STORE], 'readwrite');
+    tx.objectStore(STORE_NAME).clear();
+    tx.objectStore(TEXT_STORE).clear();
+    onTxDone(tx, resolve, reject, () => true);
   });
 }
 

@@ -51,7 +51,6 @@
           <option value="120">2 hours</option>
           <option value="240">4 hours</option>
           <option value="1440">24 hours (1 day)</option>
-          <option value="1">1 minute (Testing mode)</option>
         </select>
       </div>
 
@@ -95,27 +94,23 @@
 
       <div class="setting-row">
         <div class="setting-label-group">
-          <label for="notif-toggle">Archival Notifications</label>
-          <span class="setting-desc">Show a subtle system notification when a tab is summarized and closed.</span>
+          <label for="ai-close-toggle">Only Close Tabs With an AI Summary</label>
+          <span class="setting-desc">If no AI summary is available (on-device model, local server, or Gemini key), suspend the tab instead of closing it. Closed tabs are listed under "Closed today" in the Side Panel.</span>
         </div>
-        <input type="checkbox" id="notif-toggle" class="form-toggle">
+        <input type="checkbox" id="ai-close-toggle" class="form-toggle">
       </div>
 
       <div class="setting-row">
         <div class="setting-label-group">
-          <label for="close-sidebar-toggle">Close Sidebar on Dashboard Open</label>
-          <span class="setting-desc">Automatically close the Side Panel when launching the full-screen Knowledge Wiki dashboard.</span>
+          <label for="fade-unopened-input">Notes Fade After</label>
+          <span class="setting-desc">Unstarred notes are deleted automatically: counted from capture if you never reopened the tab, or from the last reopen. Star a note to keep it forever. 0 = never.</span>
         </div>
-        <input type="checkbox" id="close-sidebar-toggle" class="form-toggle">
+        <div class="fade-inputs">
+          <label>Unopened <input type="number" id="fade-unopened-input" class="form-input" min="0" max="3650" step="1"> days</label>
+          <label>Reopened <input type="number" id="fade-reopened-input" class="form-input" min="0" max="3650" step="1"> days</label>
+        </div>
       </div>
 
-      <div class="setting-row">
-        <div class="setting-label-group">
-          <label for="defer-deletions-toggle">Defer Deletions Until Closed</label>
-          <span class="setting-desc">Keep deletions undoable for the entire session. Deletions are only permanently finalized when you close the Side Panel or Dashboard.</span>
-        </div>
-        <input type="checkbox" id="defer-deletions-toggle" class="form-toggle">
-      </div>
     </section>
 
     <!-- AI Summarization Provider -->
@@ -128,11 +123,42 @@
           <span class="setting-desc">Select which engine powers structured distillation and topic extraction.</span>
         </div>
         <select id="ai-provider-select" class="form-select">
-          <option value="auto">Auto (Best Available — Local First)</option>
+          <option value="auto">Auto (Chrome on-device model, else heuristic)</option>
           <option value="prompt-api">Chrome Built-in Prompt API (Gemini Nano)</option>
           <option value="heuristic">Algorithmic Heuristic (Instant, 100% Offline)</option>
           <option value="gemini-api">Google Gemini Flash (Cloud BYOK)</option>
+          <option value="openai-compatible">Local / OpenAI-compatible server (Ollama, LM Studio, oMLX…)</option>
         </select>
+      </div>
+
+      <div class="setting-row hidden local-llm-row">
+        <div class="setting-label-group">
+          <label for="openai-base-url">Server URL</label>
+          <span class="setting-desc">Base URL ending in <code>/v1</code>. Page text is sent to this server for summarizing — keep it on your machine for fully local summaries.</span>
+        </div>
+        <input type="url" id="openai-base-url" placeholder="http://localhost:11434/v1" class="form-input">
+      </div>
+      <div class="setting-row hidden local-llm-row">
+        <div class="setting-label-group">
+          <label for="openai-model">Model</label>
+          <span class="setting-desc">Model name as the server knows it. <strong>Test Connection</strong> lists the available ones.</span>
+        </div>
+        <input type="text" id="openai-model" list="openai-model-list" placeholder="e.g. llama3.2" class="form-input">
+        <datalist id="openai-model-list"></datalist>
+      </div>
+      <div class="setting-row hidden local-llm-row">
+        <div class="setting-label-group">
+          <label for="openai-api-key">API Key (optional)</label>
+          <span class="setting-desc">Only if your server requires one. Stored locally in extension storage.</span>
+        </div>
+        <input type="password" id="openai-api-key" placeholder="(none)" class="form-input">
+      </div>
+      <div class="setting-row hidden local-llm-row">
+        <div class="setting-label-group">
+          <label>Connection</label>
+          <span class="setting-desc" id="openai-test-status">Grants TabSum access to the server and checks it responds.</span>
+        </div>
+        <button id="openai-test-btn" class="secondary-btn">Test Connection</button>
       </div>
 
       <div class="setting-row hidden" id="api-key-row">
@@ -159,42 +185,13 @@
       </div>
     </section>
 
-    <!-- Storage Quota Management & LRU Pruning -->
-    <section class="settings-card" id="storage-quota-section">
-      <h3>Storage Quota Management</h3>
-      <p class="section-desc">Configure local IndexedDB capacity and automatic LRU tab pruning.</p>
+    <!-- Storage -->
+    <section class="settings-card" id="storage-section">
+      <h3>Storage</h3>
+      <p class="section-desc">Notes live only in this browser. Old notes fade automatically (see "Notes Fade After").</p>
 
-      <!-- Live Storage Meter -->
       <div class="storage-meter-box">
-        <div class="storage-meter-info">
-          <span id="storage-meter-text" class="storage-meter-text">Current Storage: 0 tabs (~0 KB)</span>
-          <span id="storage-quota-subtext" class="storage-quota-subtext">Capacity: 1,000 tabs</span>
-        </div>
-        <div class="storage-progress-track">
-          <div id="storage-progress-bar" class="storage-progress-bar" style="width: 0%"></div>
-        </div>
-      </div>
-
-      <div class="setting-row">
-        <div class="setting-label-group">
-          <label for="max-stored-select">Maximum Stored Tabs</label>
-          <span class="setting-desc">Cap the total number of summaries saved locally in your Knowledge Wiki.</span>
-        </div>
-        <select id="max-stored-select" class="form-select">
-          <option value="250">250</option>
-          <option value="500">500</option>
-          <option value="1000">1,000 (Default)</option>
-          <option value="2500">2,500</option>
-          <option value="0">Unlimited</option>
-        </select>
-      </div>
-
-      <div class="setting-row">
-        <div class="setting-label-group">
-          <label for="auto-prune-toggle">Auto-Prune Oldest Tabs When Limit Reached</label>
-          <span class="setting-desc">Automatically prune oldest unpinned and non-favorite tabs when quota is reached.</span>
-        </div>
-        <input type="checkbox" id="auto-prune-toggle" class="form-toggle">
+        <span id="storage-meter-text" class="storage-meter-text">Current Storage: 0 tabs (~0 KB)</span>
       </div>
 
       <div class="setting-row">
@@ -217,6 +214,17 @@
         <div class="btn-group">
           <button id="export-json-btn" class="secondary-btn">JSON</button>
           <button id="export-md-btn" class="secondary-btn">Markdown</button>
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div>
+          <strong>Import / Restore Backup</strong>
+          <p class="setting-desc">Restore summaries from a previously exported JSON backup.</p>
+        </div>
+        <div class="btn-group">
+          <button id="import-json-btn" class="secondary-btn">Import JSON</button>
+          <input type="file" id="import-json-input" accept="application/json" hidden>
         </div>
       </div>
 

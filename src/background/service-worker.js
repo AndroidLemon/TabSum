@@ -4,16 +4,36 @@
  * soft suspension / auto-archival, and badge indicators.
  */
 
-import { saveArchivedTab, updateArchivedTabStatus, reconcilePendingRecords, getSettings, extractDomain, getStats, enforceStorageQuota } from '../storage/db.js';
+import {
+  saveArchivedTab,
+  updateArchivedTabStatus,
+  markTabClosed,
+  purgeDeletedTabs,
+  fadeExpiredTabs,
+  getTabById,
+  getSettings,
+  extractDomain,
+  getStats,
+  getArchivedTabs,
+  AI_SUMMARY_SOURCES
+} from '../storage/db.js';
 import { summarizeContent } from '../ai/summarizer.js';
 
 const ALARM_NAME = 'tabsum-inactivity-sweep';
 const SWEEP_INTERVAL_MINUTES = 1;
+const IDLE_DETECTION_SECONDS = 60;
+const SLEEP_GAP_MS = 5 * 60 * 1000; // sweep gap that means the machine was asleep
+
+// Chrome may drop alarms across browser restarts; make sure ours exists whenever the worker starts
+chrome.alarms.get(ALARM_NAME).then((alarm) => {
+  if (!alarm) chrome.alarms.create(ALARM_NAME, { periodInMinutes: SWEEP_INTERVAL_MINUTES });
+});
+
+chrome.idle.setDetectionInterval(IDLE_DETECTION_SECONDS);
 
 // Initialize on install or startup
 chrome.runtime.onInstalled.addListener(async () => {
   console.log('[TabSum] Installed.');
-  await chrome.alarms.create(ALARM_NAME, { periodInMinutes: SWEEP_INTERVAL_MINUTES });
 
   // Open side panel when clicking action icon
   if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
@@ -24,20 +44,50 @@ chrome.runtime.onInstalled.addListener(async () => {
     }
   }
 
-  // Initialize active tab timestamps & reconcile pending records
-  await initializeTabTimestamps();
-  await reconcilePendingRecords().catch(console.error);
-  await updateBadge();
+  await initialize();
 });
 
-chrome.runtime.onStartup.addListener(async () => {
-  await initializeTabTimestamps();
-  await reconcilePendingRecords().catch(console.error);
-  await updateBadge();
-});
+chrome.runtime.onStartup.addListener(initialize);
 
 /**
- * Tab Activity Tracking in chrome.storage.session (Serialized via mutex)
+ * Seed tab timestamps, clean up leftovers from earlier sessions, refresh the badge
+ */
+async function initialize() {
+  await initializeTabTimestamps();
+  // Baselines for compensateAwayTime, so sleep/idle before the first sweep isn't counted as inactivity
+  const state = await chrome.idle.queryState(IDLE_DETECTION_SECONDS);
+  await chrome.storage.session.set({
+    lastSweepAt: Date.now(),
+    ...(state === 'active' ? {} : { idleSince: Date.now() })
+  });
+  await purgeDeletedTabs().catch(console.error);
+  await reconcileDiscardedRecords().catch(console.error);
+  await updateBadge();
+}
+
+/**
+ * The tabId -> record map lives in session storage, which a browser restart (or extension
+ * update) clears, and tab ids change across restarts. Relink records TabSum left suspended to
+ * an open tab with the same URL, or mark them archived if that tab is gone.
+ */
+async function reconcileDiscardedRecords() {
+  const [records, tabs, map] = await Promise.all([
+    getArchivedTabs({ status: 'discarded', limit: Infinity }),
+    chrome.tabs.query({}),
+    getDiscardedMap()
+  ]);
+  const mapped = new Set(Object.values(map));
+  for (const record of records) {
+    if (mapped.has(record.id)) continue;
+    const tab = tabs.find(t => t.url === record.url);
+    if (tab) await mapDiscardedRecord(tab.id, record.id);
+    else await updateArchivedTabStatus(record.id, 'archived');
+  }
+}
+
+/**
+ * Tab Activity Tracking in chrome.storage.session (Serialized via mutex).
+ * Functions called inside withStorageLock must not call withStorageLock themselves.
  */
 let storageLock = Promise.resolve();
 function withStorageLock(fn) {
@@ -80,9 +130,89 @@ async function initializeTabTimestamps() {
   });
 }
 
-// Track tab activation
+/**
+ * Push every tab's last-active time forward by ms (time the user was away doesn't count).
+ * Call only inside withStorageLock.
+ */
+async function shiftTimestamps(ms) {
+  const timestamps = await getTimestamps();
+  const now = Date.now();
+  for (const tabId of Object.keys(timestamps)) {
+    timestamps[tabId] = Math.min(timestamps[tabId] + ms, now);
+  }
+  await chrome.storage.session.set({ tabTimestamps: timestamps });
+}
+
+/**
+ * Discount time spent idle/locked (idleSince) or asleep (gap since lastSweepAt; alarms
+ * don't fire during machine sleep). Both measure the same absence, so shift by the larger.
+ */
+function compensateAwayTime() {
+  return withStorageLock(async () => {
+    const now = Date.now();
+    const { idleSince, lastSweepAt } = await chrome.storage.session.get(['idleSince', 'lastSweepAt']);
+    const idleMs = idleSince ? now - idleSince : 0;
+    const gapMs = lastSweepAt && now - lastSweepAt > SLEEP_GAP_MS ? now - lastSweepAt : 0;
+    const awayMs = Math.max(idleMs, gapMs);
+    if (awayMs > 0) {
+      console.log(`[TabSum] User was away ${Math.round(awayMs / 1000)}s; pausing inactivity clocks.`);
+      await shiftTimestamps(awayMs);
+    }
+    await chrome.storage.session.set({ lastSweepAt: now });
+    await chrome.storage.session.remove('idleSince');
+  });
+}
+
+chrome.idle.onStateChanged.addListener(async (state) => {
+  if (state === 'active') {
+    await compensateAwayTime();
+    return;
+  }
+  await withStorageLock(async () => {
+    const { idleSince } = await chrome.storage.session.get('idleSince');
+    if (!idleSince) await chrome.storage.session.set({ idleSince: Date.now() });
+  });
+});
+
+/**
+ * tabId -> recordId for tabs TabSum discarded, so later tiers/events can find the record.
+ * Session storage is cleared on restart; reconcileDiscardedRecords() rebuilds it by URL.
+ */
+async function getDiscardedMap() {
+  const data = await chrome.storage.session.get('discardedRecords');
+  return data.discardedRecords || {};
+}
+
+function mapDiscardedRecord(tabId, recordId) {
+  return withStorageLock(async () => {
+    const map = await getDiscardedMap();
+    map[tabId] = recordId;
+    await chrome.storage.session.set({ discardedRecords: map });
+  });
+}
+
+/**
+ * Remove and return the record id mapped to tabId (undefined if none)
+ */
+function takeDiscardedRecord(tabId) {
+  return withStorageLock(async () => {
+    const map = await getDiscardedMap();
+    const recordId = map[tabId];
+    if (recordId) {
+      delete map[tabId];
+      await chrome.storage.session.set({ discardedRecords: map });
+    }
+    return recordId;
+  });
+}
+
+// Track tab activation; a tab TabSum discarded is back in use
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
   await setTimestamp(activeInfo.tabId, Date.now());
+  const recordId = await takeDiscardedRecord(activeInfo.tabId);
+  if (recordId) {
+    await updateArchivedTabStatus(recordId, 'restored').catch(console.error);
+  }
 });
 
 // Track tab updates (navigation / completion)
@@ -101,6 +231,12 @@ chrome.tabs.onReplaced.addListener(async (addedTabId, removedTabId) => {
       delete timestamps[removedTabId];
       await chrome.storage.session.set({ tabTimestamps: timestamps });
     }
+    const map = await getDiscardedMap();
+    if (map[removedTabId]) {
+      map[addedTabId] = map[removedTabId];
+      delete map[removedTabId];
+      await chrome.storage.session.set({ discardedRecords: map });
+    }
   });
 });
 
@@ -117,9 +253,13 @@ chrome.windows.onFocusChanged.addListener(async (windowId) => {
   }
 });
 
-// Clean up closed tabs
+// Clean up closed tabs; a closed discarded tab leaves only its archive behind
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   await removeTimestamp(tabId);
+  const recordId = await takeDiscardedRecord(tabId);
+  if (recordId) {
+    await updateArchivedTabStatus(recordId, 'archived').catch(console.error);
+  }
 });
 
 function isScriptableUrl(url) {
@@ -140,7 +280,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   // Safety Gate 1: Check if user is away from computer.
   // Don't auto-archive tabs while the user is AFK to prevent surprise on return.
   const idleState = await new Promise(resolve => {
-    chrome.idle.queryState(60, resolve);
+    chrome.idle.queryState(IDLE_DETECTION_SECONDS, resolve);
   });
   if (idleState === 'idle' || idleState === 'locked') {
     return;
@@ -154,11 +294,14 @@ async function performInactivitySweep() {
   isSweeping = true;
 
   try {
-    await reconcilePendingRecords().catch(console.error);
+    await purgeDeletedTabs().catch(console.error);
+    await compensateAwayTime();
     const hasGlobalPermission = await chrome.permissions.contains({ origins: ['<all_urls>'] });
     const settings = await getSettings();
+    await fadeHourly(settings).catch(console.error);
     const timeoutMs = (settings.timeoutMinutes || 60) * 60 * 1000;
     const timestamps = await getTimestamps();
+    const discardedMap = await getDiscardedMap();
     const now = Date.now();
 
     const allTabs = await chrome.tabs.query({});
@@ -175,15 +318,34 @@ async function performInactivitySweep() {
       // 3. Never touch tabs playing audio
       if (tab.audible) continue;
 
-      // 4. Never touch already discarded tabs
-      if (tab.discarded) continue;
+      // 4. Excluded domain check
+      const domain = extractDomain(tab.url).toLowerCase();
+      if (excludedDomains.some(ex => domain === ex || domain.endsWith('.' + ex))) {
+        continue;
+      }
 
-      // 5. Check if URL is scriptable
+      // 5. Check staleness threshold
+      const lastActive = timestamps[tab.id] || now;
+      const idleDuration = now - lastActive;
+      if (idleDuration < timeoutMs) {
+        continue;
+      }
+
+      // 6. Discarded tabs can't be scripted. Hybrid mode's second tier closes tabs TabSum
+      //    itself discarded once they've sat unused for 2x the timeout.
+      if (tab.discarded) {
+        if (settings.archiveMode === 'hybrid' && idleDuration >= 2 * timeoutMs && discardedMap[tab.id]) {
+          await closeDiscardedTab(tab, discardedMap[tab.id], settings);
+        }
+        continue;
+      }
+
+      // 7. Check if URL is scriptable
       if (!isScriptableUrl(tab.url)) {
         continue;
       }
 
-      // 6. Check host permission for this specific tab's origin
+      // 8. Check host permission for this specific tab's origin
       if (!hasGlobalPermission) {
         try {
           const parsed = new URL(tab.url);
@@ -197,25 +359,93 @@ async function performInactivitySweep() {
         }
       }
 
-      // 7. Excluded domain check
-      const domain = extractDomain(tab.url).toLowerCase();
-      if (excludedDomains.some(ex => domain === ex || domain.endsWith('.' + ex))) {
-        continue;
-      }
-
-      // 8. Check staleness threshold
-      const lastActive = timestamps[tab.id] || now;
-      const idleDuration = now - lastActive;
-      if (idleDuration < timeoutMs) {
-        continue;
-      }
-
       // Tab is eligible! Process archival
       console.log(`[TabSum] Tab ${tab.id} (${tab.url}) is stale by ${Math.round(idleDuration / 1000)}s. Archiving...`);
       await processTabArchival(tab, settings, lastActive);
     }
   } finally {
     isSweeping = false;
+  }
+}
+
+/**
+ * Delete notes past their fade date, at most once an hour (the sweep runs every minute).
+ */
+async function fadeHourly(settings) {
+  const { lastFadeAt } = await chrome.storage.session.get('lastFadeAt');
+  if (lastFadeAt && Date.now() - lastFadeAt < 60 * 60 * 1000) return;
+  await chrome.storage.session.set({ lastFadeAt: Date.now() });
+  const { fadedCount } = await fadeExpiredTabs(settings, new Set(Object.values(await getDiscardedMap())));
+  if (fadedCount) {
+    console.log(`[TabSum] ${fadedCount} note(s) faded.`);
+    await updateBadge();
+  }
+}
+
+/**
+ * Closing a tab promises "we kept the gist" — only an AI-written summary keeps that promise.
+ */
+function canCloseWith(summarySource, settings) {
+  return settings.closeRequiresAiSummary === false || AI_SUMMARY_SOURCES.has(summarySource);
+}
+
+/**
+ * Tell open extension pages (side panel "Closed today") that tabs were closed.
+ * Replaces per-tab desktop notifications.
+ */
+function notifyTabsClosed() {
+  chrome.runtime.sendMessage({ type: 'TABS_CLOSED' }).catch(() => {}); // no page open is fine
+}
+
+/**
+ * Chrome refused a close/discard after the record was committed. If the tab is still
+ * there, record why in `status`/`reason` and retry after another full timeout.
+ */
+async function revertIfStillOpen(tabId, recordId, status, reason) {
+  try {
+    await chrome.tabs.get(tabId);
+  } catch {
+    return; // tab is gone after all; the committed record stands
+  }
+  console.warn(`[TabSum] ${reason} (tab ${tabId}).`);
+  await updateArchivedTabStatus(recordId, status, reason);
+  await setTimestamp(tabId, Date.now());
+}
+
+/**
+ * Last check before a destructive call: did the user switch to (or start playing) the tab
+ * while we were writing the record?
+ * ponytail: shrinks the race window to one tabs.get round trip; it can't close it entirely.
+ */
+async function userReopened(tabId) {
+  const live = await chrome.tabs.get(tabId).catch(() => null);
+  return Boolean(live && (live.active || live.audible));
+}
+
+/**
+ * Hybrid tier 2: close a tab TabSum discarded earlier. No re-extraction (discarded tabs
+ * can't be scripted); the record captured at discard time becomes the archive.
+ */
+async function closeDiscardedTab(tab, recordId, settings) {
+  try {
+    const record = await getTabById(recordId);
+    if (!record || record.status !== 'discarded' || record.deletedAt) return;
+    if (!canCloseWith(record.summarySource, settings)) return; // stays suspended
+
+    // The archive already exists, so close first and stamp closedAt after: a worker dying in
+    // between leaves the record 'discarded' (retried next sweep) or, via onRemoved, 'archived'.
+    if (await userReopened(tab.id)) return;
+    const removed = await chrome.tabs.remove(tab.id).then(() => true, () => false);
+    if (!removed) {
+      await revertIfStillOpen(tab.id, recordId, 'discarded', 'Chrome refused to close this tab; it stays suspended');
+      return;
+    }
+    await markTabClosed(recordId);
+    console.log(`[TabSum] Closed long-discarded tab ${tab.id} (${tab.url}).`);
+    notifyTabsClosed();
+    await updateBadge();
+  } catch (err) {
+    console.error(`[TabSum] Error closing discarded tab ${tab.id}:`, err);
   }
 }
 
@@ -230,60 +460,36 @@ async function processTabArchival(tab, settings, lastActiveTime) {
       files: ['src/content/in-tab-extractor.js']
     });
 
+    // 2. Skip empty extractions and tabs with unsaved work; look again after another full timeout
     const extracted = results?.[0]?.result;
     if (!extracted) {
       console.warn(`[TabSum] Extraction returned empty for tab ${tab.id} (${tab.url})`);
+      await setTimestamp(tab.id, Date.now());
       return;
     }
-
-    // 2. Dirty check: Don't touch if user has unsaved input
     if (extracted.isDirty) {
       console.log(`[TabSum] Tab ${tab.id} has unsaved work: ${extracted.reason}. Skipping.`);
+      await setTimestamp(tab.id, Date.now());
       return;
     }
 
     // 3. Summarize content
     const summary = await summarizeContent(extracted, settings);
 
-    // 4. Save to IndexedDB with status 'pending' (Two-phase commit)
-    const record = await saveArchivedTab({
-      url: extracted.url || tab.url,
-      title: extracted.title || tab.title,
-      domain: extracted.domain || extractDomain(tab.url),
-      favIconUrl: extracted.favIconUrl || tab.favIconUrl,
-      capturedAt: Date.now(),
-      lastActiveAt: lastActiveTime,
-      readingTimeMinutes: extracted.readingTimeMinutes || 1,
-      summary,
-      cleanText: extracted.cleanText || '',
-      wordCount: extracted.wordCount || 0,
-      status: 'pending',
-      closureTier: extracted.closureTier || 'suspend_only',
-      closureReason: extracted.closureReason || '',
-      meta: extracted.meta
-    });
-
-    // 5. TOCTOU Re-Check: Did user switch into tab or play audio while we were summarizing?
+    // 4. TOCTOU Re-Check: Did user switch into tab or play audio while we were summarizing?
+    //    Checked before anything is written, so an abort leaves no record behind.
     let currentTab;
     try {
       currentTab = await chrome.tabs.get(tab.id);
     } catch {
-      // Tab was already closed by user
-      if (record?.id) {
-        await updateArchivedTabStatus(record.id, 'aborted');
-      }
-      return;
+      return; // Tab was already closed by user
     }
-
     if (!currentTab || currentTab.active || currentTab.audible) {
       console.log(`[TabSum] Tab ${tab.id} became active or audible during processing. Aborting closure.`);
-      if (record?.id) {
-        await updateArchivedTabStatus(record.id, 'aborted');
-      }
       return;
     }
 
-    // 6. Action: Soft Discard or Auto-Close based on Archive Mode
+    // 5. Soft Discard or Auto-Close based on Archive Mode
     let shouldClose = false;
     if (settings.archiveMode === 'close') {
       shouldClose = true;
@@ -293,40 +499,79 @@ async function processTabArchival(tab, settings, lastActiveTime) {
       // 'hybrid' mode (default): close pure reading articles; suspend forms/SPAs/interactive tabs
       shouldClose = extracted.closureTier === 'safe_to_close';
     }
+    let closureReason = extracted.closureReason || '';
+    if (shouldClose && !canCloseWith(summary.source, settings)) {
+      shouldClose = false;
+      closureReason = 'Suspended instead of closed: no AI summary available';
+    }
+
+    // 6. Commit the final status BEFORE the destructive call, so a worker dying in
+    //    between can't lose the archive.
+    const record = await saveArchivedTab({
+      url: extracted.url || tab.url,
+      title: extracted.title || tab.title,
+      domain: extracted.domain || extractDomain(tab.url),
+      favIconUrl: extracted.favIconUrl || tab.favIconUrl,
+      capturedAt: Date.now(),
+      lastActiveAt: lastActiveTime,
+      readingTimeMinutes: extracted.readingTimeMinutes || 1,
+      summary,
+      summarySource: summary.source,
+      cleanText: extracted.cleanText || '',
+      wordCount: extracted.wordCount || 0,
+      status: shouldClose ? 'archived' : 'discarded',
+      closedAt: shouldClose ? Date.now() : null,
+      closureTier: extracted.closureTier || 'suspend_only',
+      closureReason,
+      meta: { ...extracted.meta, heuristicTags: summary.heuristicTags }
+    });
 
     if (shouldClose) {
-      await chrome.tabs.remove(tab.id);
+      if (await userReopened(tab.id)) {
+        await revertIfStillOpen(tab.id, record.id, 'captured', 'You switched to this tab while it was being archived; summary saved, tab left open');
+        return;
+      }
+      const removed = await chrome.tabs.remove(tab.id).then(() => true, () => false);
+      if (!removed) {
+        await revertIfStillOpen(tab.id, record.id, 'captured', 'Chrome refused to close this tab; summary saved, tab left open');
+        return;
+      }
       await removeTimestamp(tab.id);
-      if (record?.id) {
-        await updateArchivedTabStatus(record.id, 'archived');
-      }
-      if (settings.notificationsEnabled) {
-        showArchivedNotification(record.title);
-      }
+      notifyTabsClosed();
     } else {
       // Soft discard: Inject sleeping tab indicator 💤 into title before discarding
+      let addedPrefix = false;
       try {
-        await chrome.scripting.executeScript({
+        const [res] = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: () => {
-            if (!document.title.startsWith('💤 ')) {
-              document.title = '💤 ' + document.title;
-            }
+            if (document.title.startsWith('💤 ')) return false;
+            document.title = '💤 ' + document.title;
+            return true;
           }
         });
+        addedPrefix = res?.result === true;
       } catch (titleErr) {
         console.debug('[TabSum] Could not prefix title with sleeping symbol:', titleErr);
       }
-      await chrome.tabs.discard(tab.id);
-      if (record?.id) {
-        await updateArchivedTabStatus(record.id, 'discarded');
+      // discard() resolves undefined when Chrome refuses to discard
+      const discardedTab = await chrome.tabs.discard(tab.id).catch(() => null);
+      if (!discardedTab) {
+        if (addedPrefix) {
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: () => { document.title = document.title.replace(/^💤 /, ''); }
+          }).catch(() => {});
+        }
+        await revertIfStillOpen(tab.id, record.id, 'captured', 'Chrome refused to suspend this tab; summary saved, tab left open');
+        return;
+      }
+      await mapDiscardedRecord(discardedTab.id, record.id);
+      // Activated while the mapping was being written? onActivated found nothing to restore.
+      if (await userReopened(discardedTab.id) && await takeDiscardedRecord(discardedTab.id)) {
+        await updateArchivedTabStatus(record.id, 'restored');
       }
     }
-
-    // Enforce storage quota auto-pruning after finalizing archival
-    await enforceStorageQuota(settings).catch(err => {
-      console.error('[TabSum] Storage quota enforcement error:', err);
-    });
 
     await updateBadge();
   } catch (err) {
@@ -337,6 +582,7 @@ async function processTabArchival(tab, settings, lastActiveTime) {
 /**
  * Extract, summarize, and archive a tab immediately.
  * Invoked by keyboard shortcut command, UI button, or runtime message.
+ * Archives even if the page reports unsaved work, since the tab stays open.
  */
 async function archiveActiveTab(activeTab) {
   if (!activeTab || !activeTab.id) {
@@ -372,17 +618,13 @@ async function archiveActiveTab(activeTab) {
     lastActiveAt: lastActive,
     readingTimeMinutes: extracted.readingTimeMinutes || 1,
     summary,
+    summarySource: summary.source,
     cleanText: extracted.cleanText || '',
     wordCount: extracted.wordCount || 0,
-    status: 'archived',
+    status: 'captured', // saved; the tab stays open
     closureTier: extracted.closureTier || 'safe_to_close',
-    closureReason: extracted.closureReason || 'Manual archive shortcut',
-    meta: extracted.meta
-  });
-
-  // Enforce storage quota auto-pruning after saving tab
-  await enforceStorageQuota(settings).catch(err => {
-    console.error('[TabSum] Storage quota enforcement error:', err);
+    closureReason: 'Saved manually; tab left open',
+    meta: { ...extracted.meta, heuristicTags: summary.heuristicTags }
   });
 
   await updateBadge();
@@ -412,6 +654,7 @@ async function handleCommand(command) {
       console.error('[TabSum] Error executing archive_active_tab command:', err);
     }
   } else if (command === '_execute_action') {
+    // Only reachable via a TRIGGER_COMMAND message; Chrome handles the real _execute_action key itself.
     if (chrome.sidePanel && chrome.sidePanel.open) {
       try {
         const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -450,7 +693,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (message.url) {
           // 1. Search existing open tabs for matching URL or tabId
           const allTabs = await chrome.tabs.query({});
-          const existingTab = allTabs.find(t => 
+          const existingTab = allTabs.find(t =>
             (message.tabId && t.id === message.tabId) ||
             t.url === message.url ||
             t.pendingUrl === message.url
@@ -479,6 +722,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
       }
 
+      // Test/debug hook: Playwright suites trigger sweeps with this.
       if (message.type === 'TRIGGER_SWEEP_NOW') {
         await performInactivitySweep();
         sendResponse({ success: true });
@@ -536,12 +780,14 @@ async function updateBadge() {
 }
 
 function showArchivedNotification(title) {
+  const text = String(title || 'Page');
+  const shortTitle = text.length > 50 ? `${text.slice(0, 50)}...` : text;
   try {
     chrome.notifications.create({
       type: 'basic',
       iconUrl: chrome.runtime.getURL('src/assets/icons/icon-128.png'),
       title: 'Tab Archived to Wiki',
-      message: `"${title.slice(0, 50)}..." summarized and saved to your knowledge base.`,
+      message: `"${shortTitle}" summarized and saved to your knowledge base.`,
       silent: true
     });
   } catch (err) {

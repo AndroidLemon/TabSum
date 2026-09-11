@@ -2,7 +2,9 @@
  * TabSum - Settings & Permissions Controller
  */
 
-import { getSettings, saveSettings, exportTabs, getStorageEstimate, enforceStorageQuota, clearAllHistory } from '../storage/db.js';
+import { getSettings, saveSettings, getArchivedTabs, saveArchivedTab, getStorageEstimate, clearAllHistory } from '../storage/db.js';
+import { escapeHtml } from '../shared/html.js';
+import { exportToMarkdown, exportToJSON, triggerDownload } from '../shared/export.js';
 
 let currentSettings = {};
 
@@ -35,38 +37,24 @@ function populateForm(settings) {
     ignorePinnedToggle.checked = settings.ignorePinnedTabs !== undefined ? Boolean(settings.ignorePinnedTabs) : true;
   }
 
-  const closeSidebarToggle = document.getElementById('close-sidebar-toggle');
-  if (closeSidebarToggle) {
-    closeSidebarToggle.checked = settings.closeSidebarOnOpenDashboard !== false;
-  }
-
-  const deferDeletionsToggle = document.getElementById('defer-deletions-toggle');
-  if (deferDeletionsToggle) {
-    deferDeletionsToggle.checked = Boolean(settings.deferDeletionsUntilClose);
-  }
-
-  document.getElementById('notif-toggle').checked = Boolean(settings.notificationsEnabled);
+  document.getElementById('ai-close-toggle').checked = settings.closeRequiresAiSummary !== false;
+  document.getElementById('fade-unopened-input').value = settings.fadeUnopenedDays;
+  document.getElementById('fade-reopened-input').value = settings.fadeReopenedDays;
   document.getElementById('ai-provider-select').value = settings.aiProvider || 'auto';
   document.getElementById('gemini-api-key').value = settings.geminiApiKey || '';
-
-  const maxStoredSelect = document.getElementById('max-stored-select');
-  if (maxStoredSelect) {
-    maxStoredSelect.value = String(settings.maxStoredItems !== undefined ? settings.maxStoredItems : 1000);
-  }
-
-  const autoPruneToggle = document.getElementById('auto-prune-toggle');
-  if (autoPruneToggle) {
-    autoPruneToggle.checked = settings.autoPruneEnabled !== undefined ? Boolean(settings.autoPruneEnabled) : true;
-  }
+  document.getElementById('openai-base-url').value = settings.openaiBaseUrl || '';
+  document.getElementById('openai-model').value = settings.openaiModel || '';
+  document.getElementById('openai-api-key').value = settings.openaiApiKey || '';
 
   toggleApiKeyRow(settings.aiProvider === 'gemini-api');
+  toggleLocalLlmRows(settings.aiProvider === 'openai-compatible');
   renderDomainChips(settings.excludedDomains || []);
 }
 
 function setupListeners() {
   // Open Wiki
   document.getElementById('open-wiki-link-btn').addEventListener('click', () => {
-    chrome.tabs.create({ url: chrome.runtime.getURL('src/wiki/index.html') });
+    chrome.tabs.create({ url: chrome.runtime.getURL('src/app/index.html') });
   });
 
   // Grant Permissions
@@ -108,30 +96,21 @@ function setupListeners() {
     });
   }
 
-  // Notifications
-  document.getElementById('notif-toggle').addEventListener('change', async (e) => {
-    currentSettings.notificationsEnabled = e.target.checked;
+  // Close only with an AI summary
+  document.getElementById('ai-close-toggle').addEventListener('change', async (e) => {
+    currentSettings.closeRequiresAiSummary = e.target.checked;
     await saveSettings(currentSettings);
-    showToast('Notification preference saved');
+    showToast('Closing preference saved');
   });
 
-  // Close Sidebar on Dashboard Open
-  const closeSidebarToggle = document.getElementById('close-sidebar-toggle');
-  if (closeSidebarToggle) {
-    closeSidebarToggle.addEventListener('change', async (e) => {
-      currentSettings.closeSidebarOnOpenDashboard = e.target.checked;
+  // Fade windows (days; 0 = never)
+  for (const [id, key] of [['fade-unopened-input', 'fadeUnopenedDays'], ['fade-reopened-input', 'fadeReopenedDays']]) {
+    document.getElementById(id).addEventListener('change', async (e) => {
+      const days = Math.max(0, parseInt(e.target.value, 10) || 0);
+      e.target.value = days;
+      currentSettings[key] = days;
       await saveSettings(currentSettings);
-      showToast('Sidebar preference saved');
-    });
-  }
-
-  // Defer Deletions Until Closed
-  const deferDeletionsToggle = document.getElementById('defer-deletions-toggle');
-  if (deferDeletionsToggle) {
-    deferDeletionsToggle.addEventListener('change', async (e) => {
-      currentSettings.deferDeletionsUntilClose = e.target.checked;
-      await saveSettings(currentSettings);
-      showToast('Deletion preference saved');
+      showToast(days ? `Notes fade after ${days} days` : 'Notes never fade');
     });
   }
 
@@ -139,9 +118,21 @@ function setupListeners() {
   document.getElementById('ai-provider-select').addEventListener('change', async (e) => {
     currentSettings.aiProvider = e.target.value;
     toggleApiKeyRow(e.target.value === 'gemini-api');
+    toggleLocalLlmRows(e.target.value === 'openai-compatible');
     await saveSettings(currentSettings);
     showToast('AI Provider updated');
   });
+
+  // Local / OpenAI-compatible server fields
+  for (const [id, key] of [['openai-base-url', 'openaiBaseUrl'], ['openai-model', 'openaiModel'], ['openai-api-key', 'openaiApiKey']]) {
+    document.getElementById(id).addEventListener('change', async (e) => {
+      currentSettings[key] = e.target.value.trim();
+      await saveSettings(currentSettings);
+      showToast('Local model settings saved');
+    });
+  }
+
+  document.getElementById('openai-test-btn').addEventListener('click', testLocalLlmConnection);
 
   // API Key input
   document.getElementById('gemini-api-key').addEventListener('change', async (e) => {
@@ -171,40 +162,50 @@ function setupListeners() {
 
   // Export buttons
   document.getElementById('export-json-btn').addEventListener('click', async () => {
-    const json = await exportTabs('json');
-    downloadFile(json, 'TabSum_Backup.json', 'application/json');
+    const tabs = await getArchivedTabs({ limit: Infinity, includeText: true });
+    const json = exportToJSON(tabs);
+    triggerDownload(json, 'TabSum_Backup.json', 'application/json;charset=utf-8');
+    showToast('Exported JSON backup');
   });
 
   document.getElementById('export-md-btn').addEventListener('click', async () => {
-    const md = await exportTabs('markdown');
-    downloadFile(md, 'TabSum_Wiki_Export.md', 'text/markdown');
+    const tabs = await getArchivedTabs({ limit: 10000 });
+    const md = exportToMarkdown(tabs);
+    triggerDownload(md, 'TabSum_Wiki_Export.md', 'text/markdown;charset=utf-8');
+    showToast('Exported Markdown');
   });
 
-  // Storage Quota: Maximum Stored Tabs
-  const maxStoredSelect = document.getElementById('max-stored-select');
-  if (maxStoredSelect) {
-    maxStoredSelect.addEventListener('change', async (e) => {
-      currentSettings.maxStoredItems = parseInt(e.target.value, 10);
-      await saveSettings(currentSettings);
-      if (currentSettings.autoPruneEnabled) {
-        await enforceStorageQuota(currentSettings);
-      }
-      await updateStorageMeter();
-      showToast('Maximum stored tabs updated');
-    });
-  }
+  // Import / Restore from a JSON backup
+  const importBtn = document.getElementById('import-json-btn');
+  const importInput = document.getElementById('import-json-input');
+  if (importBtn && importInput) {
+    importBtn.addEventListener('click', () => importInput.click());
+    importInput.addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      importInput.value = '';
+      if (!file) return;
 
-  // Storage Quota: Auto-prune toggle
-  const autoPruneToggle = document.getElementById('auto-prune-toggle');
-  if (autoPruneToggle) {
-    autoPruneToggle.addEventListener('change', async (e) => {
-      currentSettings.autoPruneEnabled = e.target.checked;
-      await saveSettings(currentSettings);
-      if (currentSettings.autoPruneEnabled) {
-        await enforceStorageQuota(currentSettings);
+      try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+        if (!Array.isArray(data)) {
+          throw new Error('Backup file must contain a JSON array of notes');
+        }
+
+        let imported = 0;
+        for (const record of data) {
+          if (record && typeof record === 'object') {
+            await saveArchivedTab(record);
+            imported++;
+          }
+        }
+
+        await updateStorageMeter();
+        showToast(`Imported ${imported} notes`);
+      } catch (err) {
+        console.error('Import failed:', err);
+        showToast('Import failed: invalid JSON backup file');
       }
-      await updateStorageMeter();
-      showToast('Auto-prune preference saved');
     });
   }
 
@@ -238,26 +239,6 @@ async function updateStorageMeter() {
       const kb = Math.round(bytes / 1024);
       meterEl.textContent = `Current Storage: ${count} tabs (~${kb} KB)`;
     }
-
-    const subtextEl = document.getElementById('storage-quota-subtext');
-    if (subtextEl) {
-      if (estimate.quota > 0) {
-        subtextEl.textContent = `Capacity: ${estimate.quota.toLocaleString()} tabs`;
-      } else {
-        subtextEl.textContent = 'Capacity: Unlimited';
-      }
-    }
-
-    const progressBar = document.getElementById('storage-progress-bar');
-    if (progressBar) {
-      if (estimate.quota > 0) {
-        const pct = Math.min(100, Math.round(((estimate.itemCount || 0) / estimate.quota) * 100));
-        progressBar.style.width = `${pct}%`;
-        progressBar.style.backgroundColor = pct > 90 ? 'var(--danger)' : 'var(--accent)';
-      } else {
-        progressBar.style.width = '0%';
-      }
-    }
   } catch (err) {
     console.error('Failed to update storage meter:', err);
   }
@@ -288,6 +269,56 @@ async function checkPermissions() {
   }
 }
 
+function toggleLocalLlmRows(show) {
+  document.querySelectorAll('.local-llm-row').forEach(row => row.classList.toggle('hidden', !show));
+}
+
+/**
+ * Ask Chrome for access to the server's origin (the service worker's summarize request needs
+ * it), then list its models via GET /models to confirm the URL and key work.
+ */
+async function testLocalLlmConnection() {
+  const status = document.getElementById('openai-test-status');
+  const baseUrl = document.getElementById('openai-base-url').value.trim().replace(/\/+$/, '');
+  let origin;
+  try {
+    origin = new URL(baseUrl).origin;
+  } catch {
+    status.textContent = '✗ Enter a valid URL, e.g. http://localhost:11434/v1';
+    return;
+  }
+
+  // Must run first, while the click still counts as a user gesture
+  const granted = await chrome.permissions.request({ origins: [`${origin}/*`] }).catch(() => false);
+  if (!granted) {
+    status.textContent = `✗ TabSum needs permission to reach ${origin}`;
+    return;
+  }
+
+  status.textContent = 'Connecting…';
+  const apiKey = document.getElementById('openai-api-key').value.trim();
+  try {
+    const res = await fetch(`${baseUrl}/models`, {
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!res.ok) {
+      status.textContent = res.status === 401 || res.status === 403
+        ? `✗ HTTP ${res.status}: check the API key${res.status === 403 ? ' (Ollama: set OLLAMA_ORIGINS=chrome-extension://*)' : ''}`
+        : `✗ HTTP ${res.status} from ${baseUrl}/models`;
+      return;
+    }
+    const models = ((await res.json()).data || []).map(m => m.id).filter(Boolean);
+    const list = document.getElementById('openai-model-list');
+    list.innerHTML = models.map(id => `<option value="${escapeHtml(id)}"></option>`).join('');
+    const chosen = document.getElementById('openai-model').value.trim();
+    status.textContent = `✓ Connected: ${models.length} model(s)` +
+      (chosen && !models.includes(chosen) ? ` — "${chosen}" isn't one of them` : '');
+  } catch (err) {
+    status.textContent = `✗ Could not reach ${baseUrl} (${err.name === 'TimeoutError' ? 'timed out' : 'is the server running?'})`;
+  }
+}
+
 function toggleApiKeyRow(show) {
   const row = document.getElementById('api-key-row');
   if (show) row.classList.remove('hidden');
@@ -315,23 +346,6 @@ function renderDomainChips(domains) {
 
     container.appendChild(chip);
   }
-}
-
-function downloadFile(content, filename, type) {
-  const blob = new Blob([content], { type });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-function escapeHtml(str) {
-  if (!str) return '';
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
 }
 
 function showToast(message) {
