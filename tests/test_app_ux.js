@@ -188,7 +188,7 @@ async function runAppUXTests() {
     // Enter reopens the selected card (capture the RESTORE_TAB message instead of opening a tab)
     await page.evaluate(() => {
       window.__realSend = chrome.runtime.sendMessage;
-      chrome.runtime.sendMessage = async (msg) => { window.__sent = msg; return { restoredInPlace: false }; };
+      chrome.runtime.sendMessage = async (msg) => { window.__sent = msg; return { success: true, restoredInPlace: false }; };
     });
     await page.keyboard.press('Enter');
     await page.waitForFunction(() => window.__sent);

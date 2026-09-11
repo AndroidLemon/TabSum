@@ -172,6 +172,8 @@ async function renderFeed(showSkeletons = false) {
   if (showSkeletons || feed.children.length === 0) feed.innerHTML = SKELETONS;
 
   const [tabs, settings] = await Promise.all([
+    // ponytail: newest 200 matches only (search/filters still reach older notes); fading keeps
+    // most libraries under this. Add a "Load more" button if real libraries outgrow it.
     getArchivedTabs({ ...currentFilters(), sortBy: state.sortBy, limit: 200 }),
     getSettings().catch(() => null)
   ]);
@@ -291,9 +293,15 @@ async function onFeedClick(e) {
 }
 
 async function reopenTab(url, recordId) {
+  if (!url) {
+    showToast('This note has no web address to reopen', true);
+    return;
+  }
   try {
     const res = await chrome.runtime.sendMessage({ type: 'RESTORE_TAB', url, recordId });
-    showToast(res?.restoredInPlace ? 'Focused existing sleeping tab!' : 'Tab reopened!');
+    if (!res?.success) throw new Error(res?.error || 'no response');
+    showToast(res.restoredInPlace ? 'Focused existing sleeping tab!' : 'Tab reopened!');
+    await refresh(); // status, inbox/reopened membership and Closed today all changed
   } catch (err) {
     showToast('Error reopening tab: ' + err.message, true);
   }
@@ -533,7 +541,7 @@ async function openReader(tab) {
     $('modal-text-content').innerHTML = formatExtractedArticle(readerTab.cleanText);
   } catch (err) {
     console.error('Failed to load full article text:', err);
-    $('modal-text-content').innerHTML = formatExtractedArticle('');
+    if (readerTab === tab) $('modal-text-content').innerHTML = formatExtractedArticle('');
   }
 }
 

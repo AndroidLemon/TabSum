@@ -13,7 +13,9 @@ import {
   getTabById,
   getSettings,
   extractDomain,
-  getStats
+  getStats,
+  getArchivedTabs,
+  AI_SUMMARY_SOURCES
 } from '../storage/db.js';
 import { summarizeContent } from '../ai/summarizer.js';
 
@@ -59,7 +61,28 @@ async function initialize() {
     ...(state === 'active' ? {} : { idleSince: Date.now() })
   });
   await purgeDeletedTabs().catch(console.error);
+  await reconcileDiscardedRecords().catch(console.error);
   await updateBadge();
+}
+
+/**
+ * The tabId -> record map lives in session storage, which a browser restart (or extension
+ * update) clears, and tab ids change across restarts. Relink records TabSum left suspended to
+ * an open tab with the same URL, or mark them archived if that tab is gone.
+ */
+async function reconcileDiscardedRecords() {
+  const [records, tabs, map] = await Promise.all([
+    getArchivedTabs({ status: 'discarded', limit: Infinity }),
+    chrome.tabs.query({}),
+    getDiscardedMap()
+  ]);
+  const mapped = new Set(Object.values(map));
+  for (const record of records) {
+    if (mapped.has(record.id)) continue;
+    const tab = tabs.find(t => t.url === record.url);
+    if (tab) await mapDiscardedRecord(tab.id, record.id);
+    else await updateArchivedTabStatus(record.id, 'archived');
+  }
 }
 
 /**
@@ -153,8 +176,7 @@ chrome.idle.onStateChanged.addListener(async (state) => {
 
 /**
  * tabId -> recordId for tabs TabSum discarded, so later tiers/events can find the record.
- * ponytail: lives in session storage, so after a browser restart old 'discarded' records
- * lose their tab link and keep that status.
+ * Session storage is cleared on restart; reconcileDiscardedRecords() rebuilds it by URL.
  */
 async function getDiscardedMap() {
   const data = await chrome.storage.session.get('discardedRecords');
@@ -364,7 +386,7 @@ async function fadeHourly(settings) {
  * Closing a tab promises "we kept the gist" — only an AI-written summary keeps that promise.
  */
 function canCloseWith(summarySource, settings) {
-  return settings.closeRequiresAiSummary === false || (summarySource && summarySource !== 'heuristic');
+  return settings.closeRequiresAiSummary === false || AI_SUMMARY_SOURCES.has(summarySource);
 }
 
 /**
@@ -410,17 +432,15 @@ async function closeDiscardedTab(tab, recordId, settings) {
     if (!record || record.status !== 'discarded' || record.deletedAt) return;
     if (!canCloseWith(record.summarySource, settings)) return; // stays suspended
 
-    await markTabClosed(recordId);
-    if (await userReopened(tab.id)) {
-      // onActivated may have marked it restored before markTabClosed overwrote that
-      await updateArchivedTabStatus(recordId, 'restored');
-      return;
-    }
+    // The archive already exists, so close first and stamp closedAt after: a worker dying in
+    // between leaves the record 'discarded' (retried next sweep) or, via onRemoved, 'archived'.
+    if (await userReopened(tab.id)) return;
     const removed = await chrome.tabs.remove(tab.id).then(() => true, () => false);
     if (!removed) {
       await revertIfStillOpen(tab.id, recordId, 'discarded', 'Chrome refused to close this tab; it stays suspended');
       return;
     }
+    await markTabClosed(recordId);
     console.log(`[TabSum] Closed long-discarded tab ${tab.id} (${tab.url}).`);
     notifyTabsClosed();
     await updateBadge();
@@ -547,6 +567,10 @@ async function processTabArchival(tab, settings, lastActiveTime) {
         return;
       }
       await mapDiscardedRecord(discardedTab.id, record.id);
+      // Activated while the mapping was being written? onActivated found nothing to restore.
+      if (await userReopened(discardedTab.id) && await takeDiscardedRecord(discardedTab.id)) {
+        await updateArchivedTabStatus(record.id, 'restored');
+      }
     }
 
     await updateBadge();

@@ -8,6 +8,8 @@ const STORE_NAME = 'archived_tabs';
 const TEXT_STORE = 'tab_text'; // { id, cleanText } kept apart so list/stat queries never deserialize page text
 const MAX_TEXT_CHARS = 50000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+// Summary sources written by an AI tier; anything else counts as 'heuristic'
+export const AI_SUMMARY_SOURCES = new Set(['gemini-api', 'openai-compatible', 'prompt-api']);
 
 let dbPromise = null;
 
@@ -124,7 +126,8 @@ export async function saveArchivedTab(tabData) {
         restoredAt: timestamp(tabData.restoredAt, undefined), // kept on JSON import; a recapture clears it
         readingTimeMinutes: Math.max(1, Math.round(Number(tabData.readingTimeMinutes)) || 1),
         summary: sanitizeSummary(tabData.summary),
-        summarySource: tabData.summarySource || 'heuristic', // 'gemini-api' | 'prompt-api' | 'heuristic'
+        // Unknown values (JSON import) must not pass the AI-only close gate
+        summarySource: AI_SUMMARY_SOURCES.has(tabData.summarySource) ? tabData.summarySource : 'heuristic',
         closedAt: timestamp(tabData.closedAt, null), // set only when TabSum itself closed the tab
         wordCount: tabData.wordCount || 0,
         // 'discarded' (suspended) | 'archived' (closed) | 'restored' (reopened) |

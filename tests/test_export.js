@@ -147,6 +147,13 @@ assert.deepStrictEqual(
   dedupeFilenames(['Note', 'Note', 'Note', 'Other']),
   ['Note', 'Note (2)', 'Note (3)', 'Other']
 );
+assert.deepStrictEqual(
+  dedupeFilenames(['Note', 'Note (2)', 'Note', 'note']),
+  ['Note', 'Note (2)', 'Note (3)', 'note (4)'],
+  'Generated names never collide with real ones, case-insensitively'
+);
+assert.ok(formatNoteSection({ title: '[PDF] Spec', url: 'https://x.example/a_(b)', summary: {} })
+  .startsWith('## [\\[PDF\\] Spec](https://x.example/a_\\(b\\))'), 'Markdown link text and URL are escaped');
 console.log('✓ Filename sanitization and dedupe verified');
 
 // Test 9: Obsidian vault ZIP - structure, filenames, frontmatter, CRC

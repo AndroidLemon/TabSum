@@ -53,7 +53,10 @@ export function formatNoteSection(tab) {
   const tags = getTags(tab);
   const bullets = getBullets(tab);
 
-  let section = `## [${title}](${url})\n`;
+  // Page-controlled text: escape what would end the link early ("[PDF] ..." titles, parens in URLs)
+  const label = title.replace(/[\\[\]]/g, '\\$&');
+  const dest = url.replace(/[\\()]/g, '\\$&').replace(/ /g, '%20');
+  let section = `## [${label}](${dest})\n`;
   section += `*Captured: ${new Date(capturedAt).toLocaleDateString()} | Domain: ${domain} | Est. Read: ${readingTime} min*\n\n`;
   section += `**TL;DR**: ${tab.summary?.tldr || 'No overview available.'}\n\n`;
   section += `### Key Takeaways\n`;
@@ -134,11 +137,12 @@ export function sanitizeFilename(name, maxLength = 100) {
  * Dedupe a list of filenames (without extension) by suffixing " (2)", " (3)", ... on collision.
  */
 export function dedupeFilenames(names) {
-  const seenCounts = new Map();
+  const used = new Set(); // lowercased: Obsidian vaults often live on case-insensitive filesystems
   return names.map(name => {
-    const count = seenCounts.get(name) || 0;
-    seenCounts.set(name, count + 1);
-    return count === 0 ? name : `${name} (${count + 1})`;
+    let candidate = name;
+    for (let n = 2; used.has(candidate.toLowerCase()); n++) candidate = `${name} (${n})`;
+    used.add(candidate.toLowerCase());
+    return candidate;
   });
 }
 
