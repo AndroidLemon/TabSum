@@ -37,7 +37,7 @@
     "type": "module"
   },
   "side_panel": {
-    "default_path": "src/sidepanel/index.html"
+    "default_path": "src/app/index.html"
   },
   "options_ui": {
     "page": "src/options/index.html",
@@ -51,12 +51,8 @@
     "scripting",
     "sidePanel",
     "unlimitedStorage",
-    "notifications"
-  ],
-  "host_permissions": [
-    "http://localhost/*",
-    "http://127.0.0.1/*",
-    "*://*.wikipedia.org/*"
+    "notifications",
+    "favicon"
   ],
   "optional_host_permissions": [
     "<all_urls>"

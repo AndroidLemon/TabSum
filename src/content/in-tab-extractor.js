@@ -23,6 +23,16 @@
     return elements;
   }
 
+  // Shared search-input exclusion so the dirty check and the closure
+  // classifier agree on what counts as a site search box (not user content).
+  const SEARCH_INPUT_NAMES = new Set(['q', 'query', 'search', 's']);
+  function isSearchInput(input) {
+    if (input.getAttribute('role') === 'searchbox') return true;
+    const type = (input.getAttribute('type') || 'text').toLowerCase();
+    if (type === 'search') return true;
+    return SEARCH_INPUT_NAMES.has((input.getAttribute('name') || '').toLowerCase());
+  }
+
   // 1. Zero-Loss Safety Check: Inspect for dirty form inputs, rich editors, or active media
   function checkIsDirty() {
     // Only check user-editable text inputs (exclude checkboxes, radios, buttons, search bars, etc.)
@@ -33,7 +43,7 @@
       if (!textTypes.has(type)) {
         continue;
       }
-      if (input.readOnly || input.disabled || input.name === 'search' || input.getAttribute('role') === 'searchbox') {
+      if (input.readOnly || input.disabled || isSearchInput(input)) {
         continue;
       }
       if (input.value && input.value.trim() !== '' && input.value !== input.defaultValue) {
@@ -73,24 +83,13 @@
       }
     }
 
-    // Check window.onbeforeunload handler as defensive signal
-    if (typeof window.onbeforeunload === 'function') {
-      return { isDirty: true, reason: 'Page has unsaved changes confirmation registered' };
-    }
-
-    return { isDirty: false };
+    return { isDirty: false, reason: '' };
   }
 
   const dirtyStatus = checkIsDirty();
-  if (dirtyStatus.isDirty) {
-    return {
-      success: false,
-      isDirty: true,
-      reason: dirtyStatus.reason
-    };
-  }
 
-  // 2. Extract Metadata
+  // 2. Extract Metadata (always runs - dirty tabs are still fully described,
+  // just never auto-closed; see the isDirty/reason fields on the result)
   function getMetaContent(selector) {
     const el = document.querySelector(selector);
     return el ? (el.getAttribute('content') || el.innerText || '').trim() : '';
@@ -117,7 +116,19 @@
 
   // Page Title
   const rawTitle = ogTitle || document.title || 'Untitled Document';
-  const cleanTitle = rawTitle.replace(/\s*[-–|•]\s*[^–|-•]+$/, '').trim() || rawTitle;
+
+  // TITLE_SEPARATOR_REGEX: strip a trailing " <sep> Site Name" suffix, but only
+  // when the separator is surrounded by whitespace (so "self-driving" survives)
+  // and the suffix is short enough to plausibly be a site name, not real title text.
+  const TITLE_SEPARATOR_REGEX = /\s+[-–—|•·]\s+(.{1,40})$/;
+  let cleanTitle = rawTitle;
+  const separatorMatch = rawTitle.match(TITLE_SEPARATOR_REGEX);
+  if (separatorMatch) {
+    const remainder = rawTitle.slice(0, separatorMatch.index).trim();
+    if (remainder.length >= 3) {
+      cleanTitle = remainder;
+    }
+  }
 
   // 3. Clean Content Extraction (Readability heuristic)
   function extractCleanText() {
@@ -160,32 +171,30 @@
   const isLowConfidence = wordCount < 150;
 
   // 4. Tiered Hybrid Safety Classifier: Distinguish 'safe_to_close' vs 'suspend_only'
-  function classifyClosureSafety(cleanText, wordCount) {
-    // Check 1: Any interactive form controls present (even if clean/untyped)
-    // Strictly exclude site-wide search boxes from blocking closure
-    const forms = queryAllDeep('form').filter(f => f.getAttribute('role') !== 'search');
-    const inputs = queryAllDeep('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"])')
-      .filter(i => i.getAttribute('role') !== 'searchbox' && i.name !== 'search' && i.name !== 'q');
+  function classifyClosureSafety(wordCount) {
+    // ponytail: ceiling - this can't tell a genuine single-field newsletter
+    // signup apart from a one-field login/account form; both read as a lone
+    // "other" input and are allowed to close, since neither has a textarea,
+    // select, password field, rich editor, or 3+ additional text inputs.
+    const candidateInputs = queryAllDeep('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"])')
+      .filter(i => !isSearchInput(i));
+    const otherInputs = candidateInputs.filter(i => (i.getAttribute('type') || 'text').toLowerCase() !== 'email');
+    const passwordInputs = otherInputs.filter(i => (i.getAttribute('type') || '').toLowerCase() === 'password');
     const selects = queryAllDeep('select');
     const textareas = queryAllDeep('textarea');
+    const appContainers = queryAllDeep(
+      '[role="dialog"], [role="application"], [contenteditable="true"], [role="textbox"], .monaco-editor, .ProseMirror, .ql-editor'
+    );
 
-    if (forms.length > 0 || inputs.length > 0 || selects.length > 0 || textareas.length > 0) {
+    // Check 1: Real interactive controls (forms, and lone search/email inputs, are exempt)
+    if (textareas.length > 0 || selects.length > 0 || passwordInputs.length > 0 || appContainers.length > 0 || otherInputs.length >= 3) {
       return {
         tier: 'suspend_only',
         reason: 'Contains form or interactive input controls'
       };
     }
 
-    // Check 2: Rich interactive application containers or modals
-    const appContainers = queryAllDeep('[role="dialog"], [role="application"], .monaco-editor, .ProseMirror, .ql-editor');
-    if (appContainers.length > 0) {
-      return {
-        tier: 'suspend_only',
-        reason: 'Interactive application container or dialog detected'
-      };
-    }
-
-    // Check 3: Stateful URL path or client-side hash routing
+    // Check 2: Stateful URL path or client-side hash routing
     const pathname = window.location.pathname.toLowerCase();
     const hash = window.location.hash.toLowerCase();
     const search = window.location.search.toLowerCase();
@@ -197,7 +206,7 @@
       };
     }
 
-    // Check 4: Complex multi-param search result listings (preserve user query state)
+    // Check 3: Complex multi-param search result listings (preserve user query state)
     if (search.includes('&') && (search.includes('q=') || search.includes('query=') || search.includes('filter='))) {
       return {
         tier: 'suspend_only',
@@ -205,7 +214,7 @@
       };
     }
 
-    // Check 5: Content density and readability confidence
+    // Check 4: Content density and readability confidence
     if (wordCount < 120) {
       return {
         tier: 'suspend_only',
@@ -220,11 +229,12 @@
     };
   }
 
-  const safetyClassification = classifyClosureSafety(cleanText, wordCount);
+  const safetyClassification = classifyClosureSafety(wordCount);
 
   return {
     success: true,
-    isDirty: false,
+    isDirty: dirtyStatus.isDirty,
+    reason: dirtyStatus.reason || '',
     isLowConfidence,
     closureTier: safetyClassification.tier,
     closureReason: safetyClassification.reason,

@@ -21,12 +21,12 @@ We open dozens of tabs intending to read them, but our tab bar quickly becomes a
 
 ### ✨ Key Features
 - **Smart Inactivity Detection**: Tracks untouched tabs and runs periodic sweeps while you work (automatically pausing when you're away from your computer).
-- **Zero-Loss Safety Net**: Inspects tabs for unsaved form inputs, drafts, or playing media before touching anything. Pinned tabs and domain whitelists are strictly protected.
+- **Safety Checks Before Archival**: Inspects tabs for unsaved form inputs, drafts, or playing media before touching anything. Pinned tabs and domain whitelists are protected by default.
 - **On-Device Structured Distillation**: Generates clean TL;DR overviews, 3–5 bullet-point takeaways, and automatic topic tags. Works 100% offline with zero setup required.
 - **Full In-Browser Knowledge Wiki**: A Notion-style dashboard with timeline browsing, topic tags, and instant keyword search across all your saved reads.
 - **Always-Available Side Panel**: Access recently archived ideas, search your backlog, or manually summarize the active tab with 1 click.
 - **Instant 1-Click Restore**: Reopen any archived tab at its exact original URL with a single click.
-- **Markdown & JSON Export**: Export your personal reading notes directly into Obsidian, Logseq, or Notion.
+- **Markdown, Obsidian & JSON Export**: Export your personal reading notes as Markdown for Logseq/Notion, a ready-to-import Obsidian vault `.zip`, or a full JSON backup that can be re-imported later.
 
 ---
 
@@ -43,27 +43,29 @@ Every permission is strictly necessary for TabSum's core functionality:
 | `scripting` | `chrome.scripting.executeScript` | Needed to inject the article content extractor into background tabs to parse article text and verify form safety. |
 | `sidePanel` | `chrome.sidePanel` | Needed to provide an always-available knowledge companion alongside browsing. |
 | `unlimitedStorage` | IndexedDB persistent quota | Needed to locally store clean reading snapshots and summaries in the user's browser without quota eviction. |
-| `notifications` | `chrome.notifications.create` | Needed to show an optional subtle notification when an idle tab has been safely archived. |
+| `notifications` | `chrome.notifications.create` | Needed to confirm a manual archive triggered by the keyboard shortcut (the page itself gives no feedback). Automatic archival does not send notifications. |
+| `favicon` | `chrome://favicon2` / the extension's `_favicon` API | Needed to display site favicons in the Side Panel and Wiki by reading Chrome's local favicon cache — no network request to the site or to any third-party favicon service. |
 | `optional_host_permissions: ["<all_urls>"]` | `chrome.permissions.request` | Requested during onboarding to allow TabSum to extract readable text from articles across user-visited websites. |
 
 ---
 
 ## 3. Privacy & Data Use Disclosure
 
-- **Host Permissions**: TabSum requests `<all_urls>` purely as an optional permission during onboarding to extract article body text from tabs eligible for archival.
+- **Host Permissions**: TabSum requests `<all_urls>` as an optional permission during onboarding to extract article body text from tabs eligible for archival.
+- **Favicons**: Site icons are loaded from Chrome's local favicon cache via the `favicon` permission, not from the live site or a third-party favicon service (e.g. Google's `s2/favicons`) — no additional network request or data leak to a third party.
 - **Data Handling**:
-  - All content parsing, heuristic distillation, and storage occur **100% locally on the user's device**.
-  - No browsing history, article contents, or personal information are ever transmitted to external servers, sold, or shared with third parties.
-  - If the user chooses to configure an optional Google Gemini API key, summary prompts are sent directly to Google's official Gemini API using the user's key.
+  - Content parsing, heuristic distillation, and storage occur locally on the user's device.
+  - No browsing history, article contents, or personal information are transmitted to external servers, sold, or shared with third parties by TabSum itself.
+  - The exceptions are user-chosen summarization providers: with an optional Google Gemini API key, the tab's extracted text is sent to Google's Gemini API using the user's own key; with an optional OpenAI-compatible server configured (typically a local model on the user's own machine), the text is sent to that server URL. Access to a configured server's origin is requested through an explicit permission prompt. With neither configured, TabSum makes no network requests.
 
 ---
 
 ## 4. Version History
 
 - **v1.0.0** (2026-09-10): Initial release.
-  - Inactivity tracking with `chrome.storage.session` and 1-minute alarm sweeps.
-  - Live in-tab Readability extraction with dirty form detection.
+  - Inactivity tracking with `chrome.storage.session` and 1-minute alarm sweeps; hybrid archival mode soft-suspends at a 1x threshold and closes/archives at a 2x threshold.
+  - Live in-tab article extraction (CSS-selector heuristic) with dirty form detection.
   - Multi-tier summarizer (Tier 0 Heuristic + Chrome Prompt API support + optional Gemini Flash BYOK).
-  - IndexedDB storage with full-text search.
+  - IndexedDB storage with full-text search and soft-delete (undo) support.
   - Full-page Wiki dashboard and Chrome Side Panel.
-  - Markdown and JSON export.
+  - Markdown, Obsidian vault (`.zip`), and JSON export; JSON import for restoring a backup.

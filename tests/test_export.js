@@ -1,14 +1,26 @@
 /**
- * Automated Unit Tests for Knowledge Wiki Export (Markdown, Obsidian, JSON)
+ * Automated Unit Tests for the shared Knowledge Wiki export module
+ * (Markdown, Obsidian vault .zip, JSON backup).
  */
 
 import assert from 'node:assert';
+import zlib from 'node:zlib';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   exportToMarkdown,
+  exportToObsidianZip,
   exportToJSON,
-  formatSingleNote,
+  formatStandaloneNote,
+  formatNoteSection,
+  sanitizeFilename,
+  dedupeFilenames,
+  buildZip,
   triggerDownload
-} from '../src/wiki/wiki.js';
+} from '../src/shared/export.js';
+import { escapeHtml } from '../src/shared/html.js';
 
 console.log('--- Running TabSum Knowledge Wiki Export Unit Tests ---');
 
@@ -45,71 +57,75 @@ const mockTab2 = {
   }
 };
 
-// Test 1: Standard Markdown Export
-console.log('Testing exportToMarkdown with format = "markdown"...');
-const mdOutput = exportToMarkdown([mockTab1], 'markdown');
+// Test 1: Combined Markdown export has NO per-note YAML frontmatter
+console.log('Testing exportToMarkdown combined format (no frontmatter)...');
+const mdOutput = exportToMarkdown([mockTab1, mockTab2]);
 
-assert.ok(mdOutput.startsWith('---\n'), 'Should start with YAML frontmatter delimiter');
-assert.ok(mdOutput.includes('title: "Modern Vector Databases & Semantic Retrieval"'), 'Frontmatter should include title in quotes');
-assert.ok(mdOutput.includes('url: "https://example.com/vector-db"'), 'Frontmatter should include url in quotes');
-assert.ok(mdOutput.includes('captured_at: "2024-09-11T06:01:40.000Z"'), 'Frontmatter should include valid ISO captured_at');
-assert.ok(mdOutput.includes('reading_time_minutes: 4'), 'Frontmatter should include numeric reading_time_minutes');
-assert.ok(mdOutput.includes('tags: [AI, Databases, Search]'), 'Frontmatter should format tags without # in standard markdown');
-assert.ok(mdOutput.includes('---\n# Modern Vector Databases & Semantic Retrieval'), 'Should end frontmatter and contain header');
-assert.ok(mdOutput.includes('> TL;DR: Vector databases power high-dimensional semantic search in modern RAG systems.'), 'Should contain TL;DR blockquote');
-assert.ok(mdOutput.includes('## Key Takeaways'), 'Should contain Key Takeaways section');
+assert.ok(!/^title: "/m.test(mdOutput), 'Combined markdown must not contain per-note YAML frontmatter (title: field)');
+assert.ok(!/^captured_at: /m.test(mdOutput), 'Combined markdown must not contain per-note YAML frontmatter (captured_at: field)');
+assert.ok(mdOutput.includes('## [Modern Vector Databases & Semantic Retrieval](https://example.com/vector-db)'), 'Should contain a ## section for the first note');
+assert.ok(mdOutput.includes('## [Chrome V8 Optimization Guide](https://dev.to/performance)'), 'Should contain a ## section for the second note');
+assert.ok(mdOutput.includes('**TL;DR**: Vector databases power high-dimensional semantic search in modern RAG systems.'), 'Should contain TL;DR line');
+assert.ok(mdOutput.includes('### Key Takeaways'), 'Should contain Key Takeaways section');
 assert.ok(mdOutput.includes('- HNSW graphs achieve logarithmic nearest-neighbor search latency'), 'Should contain bullet 1');
-assert.ok(mdOutput.includes('- Hybrid BM25 and dense vector search yields optimal recall'), 'Should contain bullet 2');
-assert.ok(mdOutput.endsWith('*Captured via TabSum*'), 'Should conclude with TabSum attribution');
-console.log('✓ Standard Markdown export format verified');
+assert.ok(mdOutput.includes('#AI') && mdOutput.includes('#Databases') && mdOutput.includes('#Search'), 'Should list tags as inline hashtags');
+assert.ok(mdOutput.includes('#JavaScript') && !mdOutput.includes('##JavaScript'), 'Should not double-hash tags that already had #');
+console.log('✓ Combined Markdown export format verified (single file, no frontmatter)');
 
-// Test 2: Obsidian Export Format
-console.log('Testing exportToMarkdown with format = "obsidian"...');
-const obsidianOutput = exportToMarkdown([mockTab1], 'obsidian');
+// Test 2: Empty export
+console.log('Testing empty tabs list...');
+assert.strictEqual(exportToMarkdown([]), '', 'Empty tabs array should return empty string');
 
-assert.ok(obsidianOutput.startsWith('---\n'), 'Should start with YAML frontmatter delimiter');
-assert.ok(obsidianOutput.includes('tags: ["#AI", "#Databases", "#Search"]'), 'Obsidian tags should be formatted with # and quoted for valid YAML');
-assert.ok(obsidianOutput.includes('title: "Modern Vector Databases & Semantic Retrieval"'));
-assert.ok(obsidianOutput.includes('# Modern Vector Databases & Semantic Retrieval'));
-assert.ok(obsidianOutput.includes('*Captured via TabSum*'));
-console.log('✓ Obsidian export format verified');
+// Test 3: formatStandaloneNote (used for Obsidian vault files and single-note clipboard copy)
+console.log('Testing formatStandaloneNote frontmatter...');
+const standalone = formatStandaloneNote(mockTab1);
+assert.ok(standalone.startsWith('---\n'), 'Should start with YAML frontmatter delimiter');
+assert.ok(standalone.includes('title: "Modern Vector Databases & Semantic Retrieval"'), 'Frontmatter should include title as a JSON-quoted string');
+assert.ok(standalone.includes('url: "https://example.com/vector-db"'), 'Frontmatter should include url as a JSON-quoted string');
+assert.ok(standalone.includes('captured_at: "2024-09-11T06:01:40.000Z"'), 'Frontmatter should include valid ISO captured_at');
+assert.ok(standalone.includes('reading_time_minutes: 4'), 'Frontmatter should include numeric reading_time_minutes');
+assert.ok(standalone.includes('tags: [AI, Databases, Search]'), 'Obsidian frontmatter tags must NOT include the # prefix');
+assert.ok(!standalone.includes('"#AI"'), 'Frontmatter tags must not be hash-prefixed');
+assert.ok(standalone.includes('# Modern Vector Databases & Semantic Retrieval'));
+assert.ok(standalone.endsWith('*Captured via TabSum*'));
+console.log('✓ formatStandaloneNote frontmatter verified (no # in frontmatter tags)');
 
-// Test 3: Tag Normalization (prevent duplicate ## hashes)
+// Test 4: Tag normalization - strips any pre-existing '#'
 console.log('Testing tag normalization for tags with pre-existing #...');
-const normMd = exportToMarkdown([mockTab2], 'markdown');
-const normObs = exportToMarkdown([mockTab2], 'obsidian');
-
-assert.ok(normMd.includes('tags: [JavaScript, WebDev]'), 'Should strip existing hash in standard markdown tags');
-assert.ok(normObs.includes('tags: ["#JavaScript", "#WebDev"]'), 'Should have single hash in Obsidian tags');
-assert.ok(!normObs.includes('##JavaScript'), 'Should not double-hash tags');
+const standalone2 = formatStandaloneNote(mockTab2);
+assert.ok(standalone2.includes('tags: [JavaScript, WebDev]'), 'Should strip pre-existing hash and never re-add it');
 console.log('✓ Tag normalization verified');
 
-// Test 4: Consolidated Multi-Tab Export
-console.log('Testing consolidated multi-tab export...');
-const multiMd = exportToMarkdown([mockTab1, mockTab2], 'markdown');
-assert.ok(multiMd.includes('# Modern Vector Databases & Semantic Retrieval'));
-assert.ok(multiMd.includes('# Chrome V8 Optimization Guide'));
-assert.strictEqual((multiMd.match(/\*Captured via TabSum\*/g) || []).length, 2, 'Should have 2 attribution footers');
-console.log('✓ Multi-tab consolidated export verified');
-
-// Test 5: Fallback & Edge Cases
+// Test 5: Sparse / missing field fallbacks
 console.log('Testing sparse/missing fields fallback...');
-const sparseTab = {
-  title: 'Sparse Article',
-  url: 'https://example.com/sparse'
+const sparseTab = { title: 'Sparse Article', url: 'https://example.com/sparse' };
+const sparseStandalone = formatStandaloneNote(sparseTab);
+assert.ok(sparseStandalone.includes('title: "Sparse Article"'));
+assert.ok(sparseStandalone.includes('reading_time_minutes: 1'), 'Should default reading time to 1');
+assert.ok(sparseStandalone.includes('tags: []'), 'Empty tags should be []');
+assert.ok(sparseStandalone.includes('> TL;DR: No overview available.'), 'Default TL;DR fallback');
+assert.ok(sparseStandalone.includes('- No key takeaways recorded'), 'Default takeaways fallback');
+console.log('✓ Sparse tab fallbacks verified');
+
+// Test 6: Defensive rendering - non-string bullets/tags are coerced/filtered
+console.log('Testing defensive coercion of non-string bullets/tags...');
+const messyTab = {
+  title: 'Messy Legacy Record',
+  url: 'https://example.com/messy',
+  summary: {
+    tldr: 'Legacy data',
+    bullets: [42, null, undefined, 'A real bullet', '  '],
+    tags: [1, null, 'real-tag', '  ']
+  }
 };
-const sparseMd = exportToMarkdown(sparseTab, 'markdown');
-assert.ok(sparseMd.includes('title: "Sparse Article"'));
-assert.ok(sparseMd.includes('reading_time_minutes: 1'), 'Should default reading time to 1');
-assert.ok(sparseMd.includes('tags: []'), 'Empty tags should be []');
-assert.ok(sparseMd.includes('> TL;DR: No overview available.'), 'Default TL;DR fallback');
-assert.ok(sparseMd.includes('- No key takeaways recorded'), 'Default takeaways fallback');
+assert.doesNotThrow(() => formatNoteSection(messyTab), 'formatNoteSection must not throw on non-string bullets/tags');
+const messySection = formatNoteSection(messyTab);
+assert.ok(messySection.includes('- 42'), 'Numeric bullets should be coerced to strings');
+assert.ok(messySection.includes('- A real bullet'));
+assert.ok(messySection.includes('#1') && messySection.includes('#real-tag'), 'Numeric/legacy tags should be coerced to strings');
+console.log('✓ Defensive coercion of legacy bullets/tags verified');
 
-const emptyOutput = exportToMarkdown([]);
-assert.strictEqual(emptyOutput, '', 'Empty tabs array should return empty string');
-console.log('✓ Sparse and empty tab fallbacks verified');
-
-// Test 6: JSON Backup Export
+// Test 7: JSON Backup Export
 console.log('Testing exportToJSON...');
 const tabsList = [mockTab1, mockTab2];
 const jsonOutput = exportToJSON(tabsList);
@@ -121,10 +137,102 @@ assert.strictEqual(parsed[1].title, mockTab2.title);
 assert.deepStrictEqual(parsed[0].summary.tags, ['AI', 'Databases', 'Search']);
 console.log('✓ JSON backup export verified');
 
-// Test 7: triggerDownload environment guard
+// Test 8: Filename sanitization & deduplication
+console.log('Testing sanitizeFilename and dedupeFilenames...');
+assert.strictEqual(sanitizeFilename('Safe Title'), 'Safe Title');
+assert.strictEqual(sanitizeFilename('Bad/Name:*?"<>|Chars'), 'BadNameChars');
+assert.strictEqual(sanitizeFilename(''), 'untitled');
+assert.strictEqual(sanitizeFilename('x'.repeat(200), 20).length, 20);
+assert.deepStrictEqual(
+  dedupeFilenames(['Note', 'Note', 'Note', 'Other']),
+  ['Note', 'Note (2)', 'Note (3)', 'Other']
+);
+console.log('✓ Filename sanitization and dedupe verified');
+
+// Test 9: Obsidian vault ZIP - structure, filenames, frontmatter, CRC
+console.log('Testing exportToObsidianZip produces a valid ZIP with one file per note...');
+const dupTitleTab = { ...mockTab2, id: 'tab-003', title: mockTab1.title }; // force a filename collision
+const zipBytes = exportToObsidianZip([mockTab1, mockTab2, dupTitleTab]);
+assert.ok(zipBytes instanceof Uint8Array, 'exportToObsidianZip should return a Uint8Array');
+
+// Local file header signature check (0x04034b50) + manual parse of all 3 local entries
+const entries = parseZipLocalEntries(zipBytes);
+assert.strictEqual(entries.length, 3, 'ZIP should contain exactly 3 local file entries (one per note)');
+
+const names = entries.map(e => e.name).sort();
+assert.ok(names.includes('Modern Vector Databases & Semantic Retrieval.md'), 'First note filename should be sanitized title + .md');
+assert.ok(names.includes('Chrome V8 Optimization Guide.md'), 'Second note filename should be sanitized title + .md');
+assert.ok(names.includes('Modern Vector Databases & Semantic Retrieval (2).md'), 'Colliding filename should be deduped with " (2)"');
+
+for (const entry of entries) {
+  const content = Buffer.from(entry.data).toString('utf-8');
+  assert.ok(content.startsWith('---\n'), `Entry ${entry.name} should start with YAML frontmatter`);
+  assert.ok(!/tags: \[.*"#/.test(content), `Entry ${entry.name} frontmatter tags must not include '#'`);
+  assert.ok(/title: ".+"/.test(content), `Entry ${entry.name} frontmatter title must be a JSON-quoted string`);
+  assert.ok(/url: ".*"/.test(content), `Entry ${entry.name} frontmatter url must be a JSON-quoted string`);
+
+  const expectedCrc = zlib.crc32(entry.data);
+  assert.strictEqual(entry.crc >>> 0, expectedCrc >>> 0, `CRC-32 of entry ${entry.name} should match its content`);
+}
+console.log('✓ Obsidian ZIP structure, filenames, frontmatter and CRC-32 verified');
+
+// Test 10: Cross-check the ZIP with the system `unzip` tool when available
+console.log('Cross-checking ZIP with system unzip (if available)...');
+try {
+  const tmpFile = path.join(os.tmpdir(), `tabsum-obsidian-test-${Date.now()}.zip`);
+  fs.writeFileSync(tmpFile, zipBytes);
+  const listing = execFileSync('unzip', ['-l', tmpFile], { encoding: 'utf-8' });
+  fs.unlinkSync(tmpFile);
+  assert.ok(listing.includes('Modern Vector Databases & Semantic Retrieval.md'), 'unzip -l should list the first note');
+  assert.ok(listing.includes('Chrome V8 Optimization Guide.md'), 'unzip -l should list the second note');
+  assert.ok(listing.includes('Modern Vector Databases & Semantic Retrieval (2).md'), 'unzip -l should list the deduped note');
+  console.log('✓ system `unzip -l` confirms archive is valid and readable');
+} catch (err) {
+  console.log(`(skipped: system unzip not available or failed — ${err.message})`);
+}
+
+// Test 11: buildZip with zero files still produces a valid (empty) archive
+console.log('Testing buildZip with no files...');
+const emptyZip = buildZip([]);
+assert.strictEqual(emptyZip.length, 22, 'An empty ZIP should be exactly the 22-byte End Of Central Directory record');
+const view = new DataView(emptyZip.buffer, emptyZip.byteOffset, emptyZip.byteLength);
+assert.strictEqual(view.getUint32(0, true), 0x06054b50, 'Empty ZIP should start with the EOCD signature');
+console.log('✓ Empty ZIP archive verified');
+
+// Test 12: triggerDownload environment guard
 console.log('Testing triggerDownload in non-browser environment...');
 const downloadResult = triggerDownload('test', 'test.md', 'text/markdown');
 assert.strictEqual(downloadResult, false, 'Should gracefully return false without throwing in Node');
 console.log('✓ triggerDownload environment guard verified');
 
+// Test 13: escapeHtml escapes quotes (attribute-injection regression guard)
+console.log('Testing escapeHtml escapes quotes...');
+assert.strictEqual(escapeHtml(`He said "hi" and it's <ok>`), 'He said &quot;hi&quot; and it&#39;s &lt;ok&gt;');
+assert.ok(!escapeHtml('"><script>alert(1)</script>').includes('"'), 'Double quotes must be escaped');
+assert.ok(!escapeHtml("'><img src=x>").includes("'"), 'Single quotes must be escaped');
+console.log('✓ escapeHtml quote-escaping verified');
+
 console.log('--- All Knowledge Wiki Export Unit Tests Passed Successfully! ---');
+
+/**
+ * Minimal ZIP local-file-header parser for test verification (STORE method only).
+ * Reads sequential local file headers starting at offset 0, as produced by buildZip().
+ */
+function parseZipLocalEntries(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const entries = [];
+  let offset = 0;
+  while (offset + 4 <= bytes.length && view.getUint32(offset, true) === 0x04034b50) {
+    const crc = view.getUint32(offset + 14, true);
+    const compSize = view.getUint32(offset + 18, true);
+    const nameLen = view.getUint16(offset + 26, true);
+    const extraLen = view.getUint16(offset + 28, true);
+    const nameStart = offset + 30;
+    const name = Buffer.from(bytes.slice(nameStart, nameStart + nameLen)).toString('utf-8');
+    const dataStart = nameStart + nameLen + extraLen;
+    const data = bytes.slice(dataStart, dataStart + compSize);
+    entries.push({ name, data, crc, compSize });
+    offset = dataStart + compSize;
+  }
+  return entries;
+}

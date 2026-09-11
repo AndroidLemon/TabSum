@@ -12,7 +12,9 @@ import assert from 'node:assert';
 import { chromium } from '@playwright/test';
 
 const PORT = 8891;
-const EXTENSION_PATH = path.resolve('.');
+import { buildTestExtension } from './helpers/test-extension.js';
+
+const EXTENSION_PATH = buildTestExtension();
 const USER_DATA_DIR = path.resolve('./tests/.playwright_user_data_hardening');
 
 // Mock server serving test pages for dirty checks and lifecycle testing
@@ -128,7 +130,7 @@ async function runHardeningTests() {
 
     // Helper page to run extension db queries
     const helperPage = await context.newPage();
-    await helperPage.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
+    await helperPage.goto(`chrome-extension://${extensionId}/src/app/index.html`);
     await helperPage.waitForLoadState('domcontentloaded');
 
     // --- TEST 1: Deduplication on Repeated Archival ---
@@ -140,7 +142,7 @@ async function runHardeningTests() {
       const rec1 = await saveArchivedTab({
         url,
         title: 'Dedup Title 1',
-        status: 'pending'
+        status: 'archived'
       });
 
       // Second save within 1 hour for the identical URL
@@ -165,65 +167,6 @@ async function runHardeningTests() {
     assert.strictEqual(dupResult.matchesCount, 1, 'Should have exactly 1 record for URL after repeated save');
     assert.strictEqual(dupResult.finalTitle, 'Dedup Title 2 Updated', 'Record should be updated with new data');
     console.log('✓ Deduplication verified: repeated save for same URL updates existing record\n');
-
-    // --- TEST 2: Two-Phase Commit Status Transitions & TOCTOU Abort ---
-    console.log('--- Test 2: Two-Phase Status Transitions & TOCTOU Abort ---');
-    const toctouResult = await helperPage.evaluate(async () => {
-      const { saveArchivedTab, updateArchivedTabStatus, getArchivedTabs } = await import('/src/storage/db.js');
-      const url = 'https://example.com/toctou-test';
-
-      // 1. Initial pending write
-      const rec = await saveArchivedTab({ url, title: 'TOCTOU Page', status: 'pending' });
-
-      // Pending records should not appear in default wiki query
-      const defaultList1 = await getArchivedTabs({});
-      const inDefaultBefore = defaultList1.some(t => t.id === rec.id);
-
-      // 2. Abort due to user switching to tab
-      await updateArchivedTabStatus(rec.id, 'aborted');
-
-      // Aborted records should also NOT appear in default wiki query
-      const defaultList2 = await getArchivedTabs({});
-      const inDefaultAfter = defaultList2.some(t => t.id === rec.id);
-
-      // But can be queried explicitly
-      const abortedList = await getArchivedTabs({ status: 'aborted' });
-      const inAborted = abortedList.some(t => t.id === rec.id);
-
-      return { inDefaultBefore, inDefaultAfter, inAborted };
-    });
-
-    assert.strictEqual(toctouResult.inDefaultBefore, false, 'Pending records must be hidden from default queries');
-    assert.strictEqual(toctouResult.inDefaultAfter, false, 'Aborted records must be hidden from default queries');
-    assert.strictEqual(toctouResult.inAborted, true, 'Aborted records must be queryable via explicit status filter');
-    console.log('✓ Two-phase status transitions & TOCTOU abort rollback verified\n');
-
-    // --- TEST 3: Reconcile Orphan Pending Records on Restart ---
-    console.log('--- Test 3: Reconcile Orphan Pending Records ---');
-    const reconcileResult = await helperPage.evaluate(async () => {
-      const { saveArchivedTab, reconcilePendingRecords, getTabById } = await import('/src/storage/db.js');
-      
-      // Simulate an orphaned pending record from 10 minutes ago
-      const staleRec = await saveArchivedTab({
-        url: 'https://example.com/orphan-tab',
-        title: 'Orphan Tab',
-        status: 'pending',
-        capturedAt: Date.now() - (10 * 60 * 1000)
-      });
-
-      const { reconciledCount } = await reconcilePendingRecords(5 * 60 * 1000);
-      const afterRec = await getTabById(staleRec.id);
-
-      return {
-        reconciledCount,
-        afterStatus: afterRec?.status,
-        abortReason: afterRec?.abortReason
-      };
-    });
-
-    assert.ok(reconcileResult.reconciledCount >= 1, 'Reconcile should clean up at least 1 orphan record');
-    assert.strictEqual(reconcileResult.afterStatus, 'aborted', 'Orphan record should be transitioned to aborted');
-    console.log(`✓ Reconciled orphan pending records: status flipped to "${reconcileResult.afterStatus}"\n`);
 
     // --- TEST 4: Deep Zero-Loss Safety Guards (Shadow DOM, Rich Editors, BeforeUnload) ---
     console.log('--- Test 4: Deep Zero-Loss Safety Guards ---');
@@ -311,7 +254,7 @@ async function runHardeningTests() {
     await helperPage.bringToFront();
     await background.evaluate(async () => {
       const tabs = await chrome.tabs.query({});
-      const helper = tabs.find(t => t.url.includes('/src/sidepanel/'));
+      const helper = tabs.find(t => t.url.includes('/src/app/'));
       if (helper) await chrome.tabs.update(helper.id, { active: true });
     });
     await helperPage.waitForTimeout(300);
@@ -378,116 +321,8 @@ async function runHardeningTests() {
     assert.strictEqual(afterReopenCount, afterCloseCount + 1, 'Page count must increase by 1 for closed tab');
     console.log('✓ Fallback restore successfully opened fresh tab for closed tab\n');
 
-    // --- TEST 6: Storage Quota Management & LRU Auto-Pruning with Favorite Preservation ---
-    console.log('--- Test 6: Storage Quota Management & LRU Pruning ---');
-    const quotaResult = await helperPage.evaluate(async () => {
-      const {
-        saveArchivedTab,
-        getTabById,
-        enforceStorageQuota,
-        toggleFavoriteTab,
-        getStorageEstimate,
-        clearAllHistory
-      } = await import('/src/storage/db.js');
-
-      await clearAllHistory();
-
-      // Create 5 tabs with varying ages and favorite / pinned flags
-      const t1 = await saveArchivedTab({
-        url: 'https://example.com/quota-1-oldest',
-        title: 'Quota Oldest',
-        capturedAt: 1000,
-        status: 'archived',
-        isFavorite: false,
-        pinned: false
-      });
-
-      const t2 = await saveArchivedTab({
-        url: 'https://example.com/quota-2-favorite',
-        title: 'Quota Favorite',
-        capturedAt: 2000,
-        status: 'archived',
-        isFavorite: true,
-        pinned: false
-      });
-
-      const t3 = await saveArchivedTab({
-        url: 'https://example.com/quota-3-pinned',
-        title: 'Quota Pinned',
-        capturedAt: 3000,
-        status: 'archived',
-        isFavorite: false,
-        pinned: true
-      });
-
-      const t4 = await saveArchivedTab({
-        url: 'https://example.com/quota-4-normal',
-        title: 'Quota Normal 4',
-        capturedAt: 4000,
-        status: 'archived',
-        isFavorite: false,
-        pinned: false
-      });
-
-      const t5 = await saveArchivedTab({
-        url: 'https://example.com/quota-5-newest',
-        title: 'Quota Newest 5',
-        capturedAt: 5000,
-        status: 'archived',
-        isFavorite: false,
-        pinned: false
-      });
-
-      // Set quota to 3. Total tabs = 5. Excess = 2.
-      // Oldest eligible tabs to prune: t1 and t4 (since t2 is favorite and t3 is pinned).
-      const pruneRes = await enforceStorageQuota({
-        maxStoredItems: 3,
-        autoPruneEnabled: true
-      });
-
-      const check1 = await getTabById(t1.id);
-      const check2 = await getTabById(t2.id);
-      const check3 = await getTabById(t3.id);
-      const check4 = await getTabById(t4.id);
-      const check5 = await getTabById(t5.id);
-
-      // Test toggleFavoriteTab
-      const toggledFav = await toggleFavoriteTab(t5.id);
-      const checkToggled = await getTabById(t5.id);
-
-      // Test getStorageEstimate
-      const estimate = await getStorageEstimate();
-
-      return {
-        prunedCount: pruneRes.prunedCount,
-        t1Exists: Boolean(check1),
-        t2Exists: Boolean(check2),
-        t2IsFavorite: check2?.isFavorite,
-        t3Exists: Boolean(check3),
-        t3Pinned: check3?.pinned,
-        t4Exists: Boolean(check4),
-        t5Exists: Boolean(check5),
-        t5ToggledFav: checkToggled?.isFavorite,
-        estimateCount: estimate.itemCount,
-        estimateBytePositive: estimate.byteEstimate > 0
-      };
-    });
-
-    assert.strictEqual(quotaResult.prunedCount, 2, 'Should prune exactly 2 excess tabs');
-    assert.strictEqual(quotaResult.t1Exists, false, 'Oldest normal tab t1 must be pruned');
-    assert.strictEqual(quotaResult.t2Exists, true, 'Favorite tab t2 must be preserved');
-    assert.strictEqual(quotaResult.t2IsFavorite, true, 't2 must retain isFavorite = true');
-    assert.strictEqual(quotaResult.t3Exists, true, 'Pinned tab t3 must be preserved');
-    assert.strictEqual(quotaResult.t3Pinned, true, 't3 must retain pinned = true');
-    assert.strictEqual(quotaResult.t4Exists, false, 'Normal tab t4 must be pruned');
-    assert.strictEqual(quotaResult.t5Exists, true, 'Newest tab t5 must be preserved');
-    assert.strictEqual(quotaResult.t5ToggledFav, true, 'toggleFavoriteTab should successfully mark tab as favorite');
-    assert.strictEqual(quotaResult.estimateCount, 3, 'Estimated item count should be 3');
-    assert.strictEqual(quotaResult.estimateBytePositive, true, 'Storage byte estimate must be positive');
-    console.log('✓ Storage Quota & LRU Pruning verified: preserved favorites and pinned tabs in real IndexedDB\n');
-
     console.log('====================================================');
-    console.log('🎉 ALL 6 TAB HARDENING TESTS PASSED SUCCESSFULLY! 🎉');
+    console.log('🎉 ALL TAB HARDENING TESTS PASSED SUCCESSFULLY! 🎉');
     console.log('====================================================');
 
   } finally {

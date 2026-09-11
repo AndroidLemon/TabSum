@@ -9,9 +9,11 @@
     "test:shortcuts": "node tests/test_shortcuts.js",
     "test:wiki": "node tests/test_wikipedia.js",
     "test:hybrid": "node tests/test_hybrid_mode.js",
-    "test:ux": "node tests/test_wiki_ux.js && node tests/test_sidepanel_ux.js"
+    "test:ux": "node tests/test_app_unit.js && node tests/test_app_ux.js",
+    "package": "rm -rf dist && mkdir -p dist && zip -rq dist/tabsum-$npm_package_version.zip manifest.json src LICENSE -x '*.DS_Store'"
   },
   "devDependencies": {
-    "@playwright/test": "^1.63.0"
+    "@playwright/test": "^1.63.0",
+    "fake-indexeddb": "^6.2.5"
   }
 }

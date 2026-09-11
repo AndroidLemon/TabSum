@@ -8,9 +8,10 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
+import { buildTestExtension } from './helpers/test-extension.js';
 
 const PORT = 8899;
-const EXTENSION_PATH = path.resolve('.');
+const EXTENSION_PATH = buildTestExtension();
 const USER_DATA_DIR = path.resolve('./tests/.playwright_user_data');
 
 // 1. Mock Web Server with Diverse Test Pages
@@ -135,7 +136,7 @@ async function runDogfood() {
     // Scenario 1: First-run Onboarding & Permission Grant
     console.log('\n--- Scenario 1: First-Run Permission Onboarding ---');
     const sidepanelPage = await context.newPage();
-    await sidepanelPage.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
+    await sidepanelPage.goto(`chrome-extension://${extensionId}/src/app/index.html`);
     await sidepanelPage.waitForLoadState('domcontentloaded');
 
     const permBanner = sidepanelPage.locator('#perm-banner');
@@ -147,8 +148,11 @@ async function runDogfood() {
     await optionsPage.goto(`chrome-extension://${extensionId}/src/options/index.html`);
     await optionsPage.waitForLoadState('domcontentloaded');
 
-    // Set testing threshold to 1 minute
-    await optionsPage.selectOption('#timeout-select', '1');
+    // Set testing threshold to 1 minute directly (no UI option for this; see Scenario 6 below)
+    await optionsPage.evaluate(async () => {
+      const { saveSettings } = await import('/src/storage/db.js');
+      await saveSettings({ timeoutMinutes: 1 });
+    });
     console.log('✓ Configured inactivity threshold to 1 minute (testing mode)');
     await optionsPage.close();
     await sidepanelPage.close();
@@ -168,7 +172,7 @@ async function runDogfood() {
 
     // Open side panel and trigger manual capture
     const sp = await context.newPage();
-    await sp.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
+    await sp.goto(`chrome-extension://${extensionId}/src/app/index.html`);
     await sp.waitForLoadState('domcontentloaded');
 
     // Make tech page active and trigger capture via service worker message
@@ -266,18 +270,18 @@ async function runDogfood() {
     // Scenario 4: Wiki Dashboard & Full-Text Search
     console.log('\n--- Scenario 4: Wiki Dashboard & Full-Text Search ---');
     const wikiPage = await context.newPage();
-    await wikiPage.goto(`chrome-extension://${extensionId}/src/wiki/index.html`);
+    await wikiPage.goto(`chrome-extension://${extensionId}/src/app/index.html`);
     await wikiPage.waitForLoadState('domcontentloaded');
 
     // Wait for card to render
-    await wikiPage.waitForSelector('.wiki-card', { timeout: 5000 });
-    const cardTitle = await wikiPage.locator('.wiki-card-title').first().textContent();
+    await wikiPage.waitForSelector('.tab-card', { timeout: 5000 });
+    const cardTitle = await wikiPage.locator('.card-title').first().textContent();
     console.log(`✓ Card rendered in Wiki: "${cardTitle}"`);
 
     // Test Search input
-    await wikiPage.fill('#wiki-search', 'HNSW');
+    await wikiPage.fill('#search-input', 'HNSW');
     await wikiPage.waitForTimeout(300); // Debounce
-    const filteredCount = await wikiPage.locator('.wiki-card').count();
+    const filteredCount = await wikiPage.locator('.tab-card').count();
     console.log(`✓ Search for "HNSW" returned ${filteredCount} card(s)`);
 
     // Test Knowledge Wiki Export Dropdown UI
@@ -313,7 +317,7 @@ async function runDogfood() {
     // Test 1-Click Restore
     console.log('\n--- Scenario 5: 1-Click Tab Restoration ---');
     const initialPages = context.pages().length;
-    await wikiPage.locator('.restore-action-btn').first().click();
+    await wikiPage.locator('.restore-btn').first().click();
     await wikiPage.waitForTimeout(600);
 
     const inPlacePages = context.pages().length;
@@ -326,7 +330,7 @@ async function runDogfood() {
     // Close the target tab and verify fallback restore opens a fresh tab
     await techPage.close();
     const afterClosePages = context.pages().length;
-    await wikiPage.locator('.restore-action-btn').first().click();
+    await wikiPage.locator('.restore-btn').first().click();
     await wikiPage.waitForTimeout(600);
 
     const fallbackPages = context.pages().length;
@@ -350,7 +354,7 @@ async function runDogfood() {
       await saveSettings({
         timeoutMinutes: 1,
         archiveMode: 'close',
-        notificationsEnabled: false
+        closeRequiresAiSummary: false // no AI tier in CI; heuristic summaries must still close
       });
     });
 
@@ -362,7 +366,7 @@ async function runDogfood() {
     // Explicitly activate wiki tab in Chrome so newsTab is guaranteed to be in background
     await background.evaluate(async () => {
       const tabs = await chrome.tabs.query({});
-      const wiki = tabs.find(t => t.url.includes('/src/wiki/'));
+      const wiki = tabs.find(t => t.url.includes('/src/app/'));
       if (wiki) await chrome.tabs.update(wiki.id, { active: true });
     });
     await wikiPage.waitForTimeout(200);

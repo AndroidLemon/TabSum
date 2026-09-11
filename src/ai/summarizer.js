@@ -1,56 +1,128 @@
 /**
  * TabSum - Multi-Tier Summarization Engine
  * Tier 0: Algorithmic Heuristics (Instant, 0ms, 100% offline, zero-config)
- * Tier 1: Chrome Built-in Prompt API (Gemini Nano on-device)
- * Tier 2: Gemini 1.5/2.0 Flash BYOK (Optional cloud API)
+ * Tier 1: Chrome Built-in Prompt API (Gemini Nano on-device, via LanguageModel)
+ * Tier 2: Gemini Flash BYOK (Optional cloud API)
  */
+
+// Bound every AI call so a hung tier can't stall a sweep.
+const TIER_TIMEOUT_MS = 20000;
+// Local models on modest hardware can need minutes; that tier streams and keeps the worker alive.
+const LOCAL_TIMEOUT_MS = 120000;
+
+// https://ai.google.dev/gemini-api/docs/models - current stable Flash model.
+// gemini-1.5-flash was retired; this is the id to bump when Google deprecates it again.
+const GEMINI_MODEL = 'gemini-3.8-flash';
+
+const SUMMARY_SCHEMA = {
+  type: 'object',
+  properties: {
+    tldr: { type: 'string' },
+    bullets: { type: 'array', items: { type: 'string' } },
+    tags: { type: 'array', items: { type: 'string' } }
+  },
+  required: ['tldr', 'bullets', 'tags']
+};
+
+const SYSTEM_PROMPT =
+  'You are an executive knowledge assistant. Given an article, respond with JSON: ' +
+  '{ "tldr": "1-2 sentence overview", "bullets": ["takeaway 1", "takeaway 2", "takeaway 3"], "tags": ["tag1", "tag2"] }';
+
+function withTimeout(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('AI tier timed out')), ms); })
+  ]).finally(() => clearTimeout(timer));
+}
 
 /**
  * Main summarization dispatcher
- * @param {Object} extractedData { title, cleanText, meta, domain, wordCount }
+ * @param {Object} extractedData { title, cleanText, meta, domain, wordCount, isLowConfidence }
  * @param {Object} settings { aiProvider, geminiApiKey }
- * @returns {Promise<{ tldr: string, bullets: string[], tags: string[] }>}
+ * @returns {Promise<{ tldr: string, bullets: string[], tags: string[], source: 'gemini-api'|'prompt-api'|'heuristic' }>}
+ *   `source` says which tier wrote it; auto-close only trusts AI-written summaries.
+ *   Only AI tiers produce tags. `heuristicTags` carries the keyword tagger's output for
+ *   side-by-side comparison; it is stored in record.meta and never shown.
+ *   ponytail: trial scaffolding - delete generateTags/heuristicTags once the comparison is done.
  */
 export async function summarizeContent(extractedData, settings = {}) {
   const { cleanText, meta, title, domain, isLowConfidence } = extractedData;
+  const heuristicTags = generateTags(title, cleanText, domain);
 
   // Handle low-confidence pages (short landing pages, quick links)
   if (isLowConfidence || !cleanText || cleanText.length < 100) {
     const desc = meta?.description || '';
     return {
-      tldr: desc || `Quick bookmark saved from ${domain}.`,
-      bullets: [
-        `Captured from ${domain}`,
-        title || 'Untitled page'
-      ],
-      tags: generateTags(title, cleanText, domain)
+      ...normalizeSummary({
+        tldr: desc || `Quick bookmark saved from ${domain}.`,
+        bullets: [],
+        tags: []
+      }),
+      source: 'heuristic',
+      heuristicTags
     };
   }
 
   const provider = settings.aiProvider || 'auto';
+  const tiers = [];
 
-  // 1. Try Gemini Flash BYOK if explicitly configured
   if (provider === 'gemini-api' && settings.geminiApiKey) {
-    try {
-      const result = await summarizeWithGeminiAPI(extractedData, settings.geminiApiKey);
-      if (result) return result;
-    } catch (err) {
-      console.warn('Gemini API call failed, falling back to heuristic:', err);
-    }
+    tiers.push({ source: 'gemini-api', run: () => summarizeWithGeminiAPI(extractedData, settings.geminiApiKey) });
   }
-
-  // 2. Try Chrome Built-in Prompt API if available
+  if (provider === 'openai-compatible' && settings.openaiBaseUrl && settings.openaiModel) {
+    tiers.push({
+      source: 'openai-compatible',
+      timeoutMs: LOCAL_TIMEOUT_MS,
+      run: () => summarizeWithOpenAICompatible(extractedData, settings)
+    });
+  }
   if (provider === 'auto' || provider === 'prompt-api') {
+    tiers.push({ source: 'prompt-api', run: () => summarizeWithChromePromptAPI(extractedData) });
+  }
+
+  for (const { source, run, timeoutMs = TIER_TIMEOUT_MS } of tiers) {
     try {
-      const nanoResult = await summarizeWithChromePromptAPI(extractedData);
-      if (nanoResult) return nanoResult;
+      const raw = await withTimeout(run(), timeoutMs);
+      const normalized = raw && normalizeSummary(raw);
+      if (normalized?.tldr) return { ...normalized, source, heuristicTags };
     } catch (err) {
-      console.warn('Chrome Prompt API not available or failed:', err);
+      console.warn('AI tier failed, falling back:', err?.message || err);
     }
   }
 
-  // 3. Fallback: Tier 0 Algorithmic Heuristic Distillation
-  return summarizeWithHeuristics(extractedData);
+  // Fallback: Tier 0 Algorithmic Heuristic Distillation
+  return { ...normalizeSummary(summarizeWithHeuristics(extractedData)), source: 'heuristic', heuristicTags };
+}
+
+/**
+ * Validate and coerce a raw summary (from any tier) into the canonical shape.
+ */
+export function normalizeSummary(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return { tldr: '', bullets: [], tags: [] };
+  }
+
+  const tldr = typeof raw.tldr === 'string' ? raw.tldr.trim() : '';
+
+  const bullets = Array.isArray(raw.bullets)
+    ? raw.bullets.filter(b => typeof b === 'string').map(b => b.trim()).filter(Boolean).slice(0, 5)
+    : [];
+
+  const tags = [];
+  const seen = new Set();
+  if (Array.isArray(raw.tags)) {
+    for (const t of raw.tags) {
+      if (typeof t !== 'string') continue;
+      const clean = t.trim().replace(/^#+\s*/, '');
+      if (!clean || seen.has(clean.toLowerCase())) continue;
+      seen.add(clean.toLowerCase());
+      tags.push(clean);
+      if (tags.length === 4) break;
+    }
+  }
+
+  return { tldr, bullets, tags };
 }
 
 /**
@@ -123,20 +195,19 @@ export function summarizeWithHeuristics({ title, cleanText, meta, domain }) {
     bullets.push(topSentences[0]);
   }
 
-  // Tags
-  const tags = generateTags(title, cleanText, domain);
-
   return {
     tldr: cleanUpSummaryText(tldr),
     bullets: bullets.map(b => cleanUpSummaryText(b)),
-    tags
+    tags: [] // tags come only from AI tiers
   };
 }
 
 /**
- * Generate semantic category tags using topic keyword clustering
+ * Generate semantic category tags using topic keyword clustering.
+ * Each tag needs `minHits` distinct keyword matches to fire, so a single
+ * generic word can't tag every page.
  */
-function generateTags(title = '', text = '', domain = '') {
+export function generateTags(title = '', text = '', domain = '') {
   const tags = new Set();
   const corpus = `${title} ${domain} ${text.slice(0, 1500)}`.toLowerCase();
 
@@ -157,18 +228,19 @@ function generateTags(title = '', text = '', domain = '') {
   }
 
   const topicKeywords = [
-    { tag: 'AI', regex: /\b(ai|llm|gpt|machine learning|neural network|transformer|deep learning|agent)\b/i },
-    { tag: 'Engineering', regex: /\b(architecture|api|database|backend|frontend|rust|python|typescript|golang|react|docker|kubernetes)\b/i },
-    { tag: 'Design', regex: /\b(ui|ux|typography|design system|figma|css|layout|wireframe)\b/i },
-    { tag: 'Productivity', regex: /\b(workflow|habit|efficiency|focus|time management|organization)\b/i },
-    { tag: 'Business', regex: /\b(startup|revenue|growth|market|pricing|saas|venture|funding)\b/i },
-    { tag: 'Science', regex: /\b(biology|physics|climate|genetics|astronomy|medicine|neuroscience)\b/i },
-    { tag: 'Security', regex: /\b(vulnerability|encryption|auth|malware|cve|zero-day|privacy)\b/i }
+    { tag: 'AI', minHits: 1, terms: [/\bllm\b/, /\bgpt\b/, /machine learning/, /neural network/, /transformer/, /deep learning/, /generative ai/] },
+    { tag: 'Engineering', minHits: 2, terms: [/architecture/, /database/, /backend/, /frontend/, /\brust\b/, /\bpython\b/, /typescript/, /golang/, /\breact\b/, /docker/, /kubernetes/, /webassembly/, /compiler/] },
+    { tag: 'Design', minHits: 1, terms: [/\bux\b/, /typography/, /design system/, /\bfigma\b/, /wireframe/] },
+    { tag: 'Productivity', minHits: 2, terms: [/time management/, /pomodoro/, /inbox zero/, /calendar blocking/, /task list/] },
+    { tag: 'Business', minHits: 2, terms: [/\bstartup\b/, /venture capital/, /\bsaas\b/, /funding round/, /quarterly earnings/, /\bipo\b/] },
+    { tag: 'Science', minHits: 1, terms: [/biology/, /physics/, /climate change/, /genetics/, /astronomy/, /neuroscience/] },
+    { tag: 'Security', minHits: 1, terms: [/vulnerability/, /encryption/, /malware/, /\bcve\b/, /zero-day/, /ransomware/] }
   ];
 
-  for (const item of topicKeywords) {
-    if (item.regex.test(corpus)) {
-      tags.add(item.tag);
+  for (const { tag, minHits, terms } of topicKeywords) {
+    const hits = terms.filter(re => re.test(corpus)).length;
+    if (hits >= minHits) {
+      tags.add(tag);
     }
   }
 
@@ -180,59 +252,57 @@ function generateTags(title = '', text = '', domain = '') {
 }
 
 /**
- * Tier 1: Chrome Prompt API (Gemini Nano)
+ * Tier 1: Chrome built-in Prompt API (Gemini Nano on-device)
+ * https://developer.chrome.com/docs/ai/prompt-api
  */
 async function summarizeWithChromePromptAPI({ title, cleanText }) {
-  const ai = globalThis.ai || globalThis.LanguageModel;
-  if (!ai) return null;
+  if (typeof LanguageModel === 'undefined') return null;
 
-  let session;
-  if (ai.languageModel?.create) {
-    session = await ai.languageModel.create({
-      systemPrompt: 'You are an executive knowledge assistant. Given an article, return a concise JSON object with { "tldr": "1-2 sentence overview", "bullets": ["takeaway 1", "takeaway 2", "takeaway 3"], "tags": ["tag1", "tag2"] }'
-    });
-  } else if (typeof LanguageModel !== 'undefined') {
-    session = await LanguageModel.create();
-  }
-
-  if (!session) return null;
-
+  let availability;
   try {
-    const prompt = `Title: ${title}\n\nArticle excerpt:\n${cleanText.slice(0, 3000)}\n\nProvide the summary JSON:`;
-    const response = await session.prompt(prompt);
+    availability = await LanguageModel.availability();
+  } catch {
+    return null;
+  }
+  // Only proceed when the model is already on-device; never kick off a
+  // multi-gigabyte download from a background service worker.
+  if (availability !== 'available') return null;
 
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
-      if (parsed.tldr && Array.isArray(parsed.bullets)) {
-        return {
-          tldr: parsed.tldr,
-          bullets: parsed.bullets.slice(0, 4),
-          tags: parsed.tags || ['Article']
-        };
-      }
-    }
+  const signal = AbortSignal.timeout(TIER_TIMEOUT_MS);
+  let session;
+  try {
+    session = await LanguageModel.create({
+      initialPrompts: [{ role: 'system', content: SYSTEM_PROMPT }],
+      signal
+    });
+
+    const prompt = `Title: ${title}\n\nArticle excerpt:\n${cleanText.slice(0, 3000)}`;
+    const response = await session.prompt(prompt, {
+      responseConstraint: SUMMARY_SCHEMA,
+      signal
+    });
+
+    return JSON.parse(response);
   } catch (err) {
     console.debug('Chrome Prompt API execution error:', err);
+    return null;
   } finally {
     if (session && typeof session.destroy === 'function') {
       try { session.destroy(); } catch {}
     }
   }
-
-  return null;
 }
 
 /**
  * Tier 2: Cloud Gemini API (Optional BYOK)
+ * https://ai.google.dev/api/generate-content
  */
 async function summarizeWithGeminiAPI({ title, cleanText }, apiKey) {
-  // Use header-based key delivery instead of URL query parameter to avoid logging exposure
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
   const prompt = `Summarize this web page into structured JSON with fields:
   "tldr": 1-2 sentence core message
-  "bullets": array of 3 distinct key takeaways
-  "tags": array of 2-3 topic tags
+  "bullets": array of up to 5 distinct key takeaways
+  "tags": array of up to 4 topic tags
 
   Title: ${title}
   Content:
@@ -242,30 +312,113 @@ async function summarizeWithGeminiAPI({ title, cleanText }, apiKey) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      // Header-based key delivery instead of URL query parameter to avoid logging exposure
       'x-goog-api-key': apiKey
     },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: {
-        responseMimeType: 'application/json'
+        responseMimeType: 'application/json',
+        responseSchema: SUMMARY_SCHEMA
       }
-    })
+    }),
+    signal: AbortSignal.timeout(TIER_TIMEOUT_MS)
   });
 
   if (!res.ok) {
-    throw new Error(`Gemini API error: ${res.status}`);
+    const errBody = await res.text().catch(() => '');
+    console.warn(`Gemini API error: ${res.status} ${errBody.slice(0, 300)}`);
+    return null;
   }
 
   const data = await res.json();
   const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!rawText) return null;
 
-  const parsed = JSON.parse(rawText);
-  return {
-    tldr: parsed.tldr || '',
-    bullets: parsed.bullets || [],
-    tags: parsed.tags || []
-  };
+  return JSON.parse(rawText);
+}
+
+/**
+ * Tier 3: any OpenAI-compatible /chat/completions endpoint (Ollama, LM Studio, llama.cpp
+ * server, vLLM, ...). Two service-worker constraints shape this:
+ *  - Chrome kills an extension worker whose fetch() takes >30s to start responding, so we
+ *    stream (headers arrive immediately) instead of waiting for the full completion.
+ *  - The worker also idles out after 30s without extension events/API calls, so we make a
+ *    cheap API call every 20s while generating.
+ * ponytail: no response_format - json_object/json_schema support varies across local
+ * servers, so we prompt for JSON and extract it from the reply.
+ */
+async function summarizeWithOpenAICompatible({ title, cleanText }, settings) {
+  const url = `${settings.openaiBaseUrl.trim().replace(/\/+$/, '')}/chat/completions`;
+  const headers = { 'Content-Type': 'application/json' };
+  if (settings.openaiApiKey) headers.Authorization = `Bearer ${settings.openaiApiKey}`;
+
+  const keepAlive = setInterval(() => globalThis.chrome?.runtime?.getPlatformInfo?.(), 20000);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: settings.openaiModel,
+        stream: true,
+        temperature: 0.2,
+        messages: [
+          { role: 'system', content: `${SYSTEM_PROMPT} Reply with the JSON object only.` },
+          { role: 'user', content: `Title: ${title}\n\nArticle excerpt:\n${cleanText.slice(0, 6000)}` }
+        ]
+      }),
+      signal: AbortSignal.timeout(LOCAL_TIMEOUT_MS)
+    });
+
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      console.warn(`OpenAI-compatible endpoint error: ${res.status} ${errBody.slice(0, 300)}`);
+      return null;
+    }
+    return parseJsonObject(await readChatCompletion(res));
+  } finally {
+    clearInterval(keepAlive);
+  }
+}
+
+/**
+ * Assistant text from a chat completion: an SSE stream of delta chunks, or a plain JSON
+ * body from servers that ignore `stream: true`.
+ */
+async function readChatCompletion(res) {
+  if (!(res.headers.get('content-type') || '').includes('text/event-stream')) {
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content || '';
+  }
+
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = '';
+  let text = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) return text;
+    buffer += value;
+    const lines = buffer.split('\n');
+    buffer = lines.pop(); // keep a partial line for the next chunk
+    for (const line of lines) {
+      if (!line.startsWith('data:')) continue; // comments / keep-alives
+      const data = line.slice(5).trim();
+      if (data === '[DONE]') return text;
+      try {
+        text += JSON.parse(data).choices?.[0]?.delta?.content || '';
+      } catch {
+        // malformed chunk; skip it
+      }
+    }
+  }
+}
+
+/**
+ * First {...} object in a model reply, ignoring <think> blocks from reasoning models.
+ */
+function parseJsonObject(text) {
+  const match = text.replace(/<think>[\s\S]*?<\/think>/g, '').match(/\{[\s\S]*\}/);
+  return match ? JSON.parse(match[0]) : null;
 }
 
 function cleanUpSummaryText(text) {
