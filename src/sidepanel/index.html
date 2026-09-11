@@ -72,9 +72,20 @@
       <input type="text" id="search-input" placeholder="Search summaries, tags, domains...">
     </div>
 
-    <!-- Tag Cloud Filters -->
-    <div id="tag-filters" class="tag-filters">
-      <!-- Injected via JS -->
+    <!-- Feed Controls: Tags & Sort -->
+    <div class="feed-controls-row">
+      <div id="tag-filters" class="tag-filters">
+        <!-- Injected via JS -->
+      </div>
+      <div class="panel-sort-wrapper">
+        <select id="panel-sort-select" class="panel-sort-select" aria-label="Sort feed" title="Sort feed">
+          <option value="newest">Newest</option>
+          <option value="oldest">Oldest</option>
+          <option value="reading-time-asc">Quick Reads</option>
+          <option value="reading-time-desc">Deep Dives</option>
+          <option value="title-asc">A-Z</option>
+        </select>
+      </div>
     </div>
 
     <!-- Feed Container -->

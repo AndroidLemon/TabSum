@@ -75,6 +75,10 @@ import './test_export.js';
 // Test 6: Storage Quota Management & LRU Pruning
 import './test_storage_quota.js';
 
+// Test 7: Multi-Attribute Sorting
+import { runSortingTests } from './test_sorting.js';
+await runSortingTests();
+
 console.log('--- All Unit Verification Tests Passed Successfully! ---');
 
 

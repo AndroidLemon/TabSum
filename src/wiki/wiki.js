@@ -17,6 +17,7 @@ let currentTimeFilter = '';
 let currentTagFilter = '';
 let currentDomainFilter = '';
 let searchQuery = '';
+let currentSortBy = 'newest';
 
 let searchDebounceTimer = null;
 
@@ -67,6 +68,15 @@ function setupEventListeners() {
     updateFilterBanner();
     await renderGrid();
   });
+
+  // Sort select
+  const sortSelect = document.getElementById('wiki-sort-select');
+  if (sortSelect) {
+    sortSelect.addEventListener('change', async (e) => {
+      currentSortBy = e.target.value;
+      await renderGrid();
+    });
+  }
 
   // Export Dropdown Action
   const exportDropdownBtn = document.getElementById('export-dropdown-btn');
@@ -241,6 +251,7 @@ async function renderGrid() {
     tag: currentTagFilter,
     domain: currentDomainFilter,
     timeRange: currentTimeFilter,
+    sortBy: currentSortBy,
     limit: 200
   });
 

@@ -70,6 +70,16 @@
           <input type="text" id="wiki-search" placeholder="Search knowledge base (title, summary, takeaways, text)...">
         </div>
         <div class="header-controls">
+          <div class="sort-control">
+            <select id="wiki-sort-select" class="wiki-sort-select" aria-label="Sort knowledge base" title="Sort knowledge base">
+              <option value="newest">Newest First</option>
+              <option value="oldest">Oldest First</option>
+              <option value="reading-time-asc">Quick Reads</option>
+              <option value="reading-time-desc">Deep Dives</option>
+              <option value="title-asc">Title (A-Z)</option>
+              <option value="domain">Domain</option>
+            </select>
+          </div>
           <span id="results-count" class="results-count">0 items</span>
           <div class="export-dropdown" id="export-dropdown">
             <button id="export-dropdown-btn" class="export-dropdown-btn" aria-haspopup="true" aria-expanded="false" aria-label="Export Knowledge Wiki" title="Export Knowledge Wiki">

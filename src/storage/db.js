@@ -148,9 +148,7 @@ export async function getArchivedTabs(filters = {}) {
     const tx = db.transaction(STORE_NAME, 'readonly');
     const store = tx.objectStore(STORE_NAME);
     const index = store.index('capturedAt');
-    const request = index.openCursor(null, 'prev'); // Most recent first
 
-    const results = [];
     const {
       query = '',
       tag = '',
@@ -158,18 +156,44 @@ export async function getArchivedTabs(filters = {}) {
       timeRange = '',
       status = '',
       favoriteOnly = false,
+      sortBy = 'newest', // 'newest' | 'oldest' | 'reading-time-asc' | 'reading-time-desc' | 'title-asc' | 'domain'
       limit = 100,
       offset = 0
     } = filters;
 
+    // Use native index cursor direction for temporal sorting
+    const isCustomSort = sortBy !== 'newest' && sortBy !== 'oldest';
+    const direction = sortBy === 'oldest' ? 'next' : 'prev';
+    const request = index.openCursor(null, direction);
+
+    const matches = [];
     const normalizedQuery = query.toLowerCase().trim();
     const now = Date.now();
     let skipped = 0;
 
+    const finalizeResults = () => {
+      if (!isCustomSort) {
+        resolve(matches);
+        return;
+      }
+
+      if (sortBy === 'reading-time-asc') {
+        matches.sort((a, b) => (a.readingTimeMinutes || 1) - (b.readingTimeMinutes || 1));
+      } else if (sortBy === 'reading-time-desc') {
+        matches.sort((a, b) => (b.readingTimeMinutes || 1) - (a.readingTimeMinutes || 1));
+      } else if (sortBy === 'title-asc') {
+        matches.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+      } else if (sortBy === 'domain') {
+        matches.sort((a, b) => (a.domain || '').localeCompare(b.domain || ''));
+      }
+
+      resolve(matches.slice(offset, offset + limit));
+    };
+
     request.onsuccess = (event) => {
       const cursor = event.target.result;
       if (!cursor) {
-        resolve(results);
+        finalizeResults();
         return;
       }
 
@@ -239,18 +263,25 @@ export async function getArchivedTabs(filters = {}) {
         }
       }
 
-      if (skipped < offset) {
-        skipped++;
+      // For standard index-ordered queries, stream and terminate early when limit is satisfied
+      if (!isCustomSort) {
+        if (skipped < offset) {
+          skipped++;
+          cursor.continue();
+          return;
+        }
+
+        matches.push(item);
+        if (matches.length >= limit) {
+          resolve(matches);
+          return;
+        }
         cursor.continue();
         return;
       }
 
-      results.push(item);
-      if (results.length >= limit) {
-        resolve(results);
-        return;
-      }
-
+      // For in-memory sorted criteria (reading time, title, domain), accumulate matches
+      matches.push(item);
       cursor.continue();
     };
 

@@ -264,9 +264,39 @@ body {
   gap: 14px;
 }
 
+.sort-control {
+  display: flex;
+  align-items: center;
+}
+
+.wiki-sort-select {
+  padding: 8px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  color: var(--text-main);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.wiki-sort-select:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--accent);
+}
+
+.wiki-sort-select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
+}
+
 .results-count {
   font-size: 13px;
   color: var(--text-muted);
+  white-space: nowrap;
 }
 
 /* Export Dropdown */

@@ -6,6 +6,7 @@ import { getArchivedTabs, getAllTags, getStats, deleteArchivedTab, updateTabStat
 
 let activeTagFilter = '';
 let currentSearchQuery = '';
+let currentSortBy = 'newest';
 
 let searchDebounceTimer = null;
 
@@ -101,6 +102,15 @@ function setupEventListeners() {
       await renderFeed();
     }, 200);
   });
+
+  // Sort select
+  const sortSelect = document.getElementById('panel-sort-select');
+  if (sortSelect) {
+    sortSelect.addEventListener('change', async (e) => {
+      currentSortBy = e.target.value;
+      await renderFeed();
+    });
+  }
 
   // Pressing Enter in the search bar restores/focuses the top filtered result
   searchInput.addEventListener('keydown', async (e) => {
@@ -224,6 +234,7 @@ async function renderFeed() {
   const tabs = await getArchivedTabs({
     query: currentSearchQuery,
     tag: activeTagFilter,
+    sortBy: currentSortBy,
     limit: 50
   });
 
