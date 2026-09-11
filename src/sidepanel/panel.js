@@ -2,16 +2,24 @@
  * TabSum - Side Panel Controller
  */
 
-import { getArchivedTabs, getAllTags, getStats, deleteArchivedTab, updateTabStatus } from '../storage/db.js';
+import { getArchivedTabs, getAllTags, getStats, deleteArchivedTab, updateTabStatus, getSettings } from '../storage/db.js';
 
 let activeTagFilter = '';
 let currentSearchQuery = '';
 let currentSortBy = 'newest';
+let currentDensity = 'comfortable'; // 'comfortable' | 'compact'
 
 let searchDebounceTimer = null;
+let selectedCardIndex = -1;
+let toastTimeout = null;
+
+// Staged deletion map: tabId -> { timer, tabData }
+const pendingDeletes = new Map();
+let lastDeletedTabId = null;
 
 document.addEventListener('DOMContentLoaded', async () => {
   setupEventListeners();
+  await loadDensityPreference();
   await checkPermissions();
   await refreshDashboard();
 });
@@ -21,12 +29,47 @@ async function checkPermissions() {
   try {
     const hasPermission = await chrome.permissions.contains({ origins: ['<all_urls>'] });
     if (!hasPermission) {
-      permBanner.classList.remove('hidden');
+      permBanner?.classList.remove('hidden');
     } else {
-      permBanner.classList.add('hidden');
+      permBanner?.classList.add('hidden');
     }
   } catch (err) {
     console.debug('Permission check error:', err);
+  }
+}
+
+async function loadDensityPreference() {
+  try {
+    const data = await chrome.storage.local.get('sidepanel_density');
+    if (data.sidepanel_density === 'compact' || data.sidepanel_density === 'comfortable') {
+      currentDensity = data.sidepanel_density;
+    }
+  } catch (err) {
+    console.debug('Failed to load density preference:', err);
+  }
+  updateDensityUI();
+}
+
+function updateDensityUI() {
+  const btn = document.getElementById('density-toggle-btn');
+  if (!btn) return;
+  const isCompact = currentDensity === 'compact';
+  btn.classList.toggle('active', isCompact);
+  btn.setAttribute('aria-pressed', isCompact ? 'true' : 'false');
+  btn.title = isCompact ? 'Switch to Comfortable View' : 'Switch to Compact View';
+}
+
+function updateSearchControlsUI() {
+  const searchInput = document.getElementById('search-input');
+  const searchClearBtn = document.getElementById('search-clear-btn');
+  const searchKbdHint = document.getElementById('search-kbd-hint');
+  const hasText = Boolean(searchInput && searchInput.value.length > 0);
+
+  if (searchClearBtn) {
+    searchClearBtn.classList.toggle('hidden', !hasText);
+  }
+  if (searchKbdHint) {
+    searchKbdHint.classList.toggle('hidden', hasText);
   }
 }
 
@@ -38,7 +81,7 @@ function setupEventListeners() {
       try {
         const granted = await chrome.permissions.request({ origins: ['<all_urls>'] });
         if (granted) {
-          document.getElementById('perm-banner').classList.add('hidden');
+          document.getElementById('perm-banner')?.classList.add('hidden');
           showToast('Extraction permissions enabled!');
         }
       } catch (err) {
@@ -48,141 +91,308 @@ function setupEventListeners() {
   }
 
   // Open full wiki dashboard
-  document.getElementById('open-wiki-btn').addEventListener('click', () => {
+  document.getElementById('open-wiki-btn')?.addEventListener('click', async () => {
     chrome.tabs.create({ url: chrome.runtime.getURL('src/wiki/index.html') });
+    try {
+      const settings = await getSettings();
+      if (settings.closeSidebarOnOpenDashboard !== false) {
+        await closeSidePanel();
+      }
+    } catch (err) {
+      console.debug('Failed to check closeSidebarOnOpenDashboard:', err);
+    }
   });
 
   // Open settings
-  document.getElementById('open-options-btn').addEventListener('click', () => {
+  document.getElementById('open-options-btn')?.addEventListener('click', () => {
     chrome.runtime.openOptionsPage();
   });
 
+  // Density toggle button
+  const densityBtn = document.getElementById('density-toggle-btn');
+  if (densityBtn) {
+    densityBtn.addEventListener('click', async () => {
+      currentDensity = currentDensity === 'comfortable' ? 'compact' : 'comfortable';
+      updateDensityUI();
+      try {
+        await chrome.storage.local.set({ sidepanel_density: currentDensity });
+      } catch (err) {
+        console.debug('Failed to save density preference:', err);
+      }
+      const cards = document.querySelectorAll('#tabs-feed .tab-card');
+      cards.forEach(card => card.classList.toggle('compact', currentDensity === 'compact'));
+    });
+  }
+
   // Archive current active tab
   const archiveBtn = document.getElementById('archive-current-btn');
-  archiveBtn.addEventListener('click', async () => {
-    archiveBtn.disabled = true;
-    archiveBtn.innerHTML = 'Archiving...';
-    try {
-      const response = await chrome.runtime.sendMessage({ type: 'ARCHIVE_ACTIVE_TAB' });
-      if (response && response.success) {
-        showToast('Tab archived & summarized!');
-        await refreshDashboard();
-      } else {
-        showToast(response?.error || 'Could not archive tab', true);
+  if (archiveBtn) {
+    archiveBtn.addEventListener('click', async () => {
+      archiveBtn.disabled = true;
+      archiveBtn.innerHTML = 'Archiving...';
+      try {
+        const response = await chrome.runtime.sendMessage({ type: 'ARCHIVE_ACTIVE_TAB' });
+        if (response && response.success) {
+          showToast('Tab archived & summarized!');
+          await refreshDashboard();
+        } else {
+          showToast(response?.error || 'Could not archive tab', true);
+        }
+      } catch (err) {
+        showToast('Error archiving tab: ' + err.message, true);
+      } finally {
+        archiveBtn.disabled = false;
+        archiveBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path></svg> Archive Current Tab`;
       }
-    } catch (err) {
-      showToast('Error archiving tab: ' + err.message, true);
-    } finally {
-      archiveBtn.disabled = false;
-      archiveBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path></svg> Archive Current Tab`;
-    }
-  });
+    });
+  }
 
   // Sweep now
   const sweepBtn = document.getElementById('sweep-now-btn');
-  sweepBtn.addEventListener('click', async () => {
-    sweepBtn.disabled = true;
-    try {
-      await chrome.runtime.sendMessage({ type: 'TRIGGER_SWEEP_NOW' });
-      showToast('Inactivity sweep executed');
-      await refreshDashboard();
-    } catch (err) {
-      showToast('Sweep error: ' + err.message, true);
-    } finally {
-      sweepBtn.disabled = false;
-    }
-  });
+  if (sweepBtn) {
+    sweepBtn.addEventListener('click', async () => {
+      sweepBtn.disabled = true;
+      try {
+        await chrome.runtime.sendMessage({ type: 'TRIGGER_SWEEP_NOW' });
+        showToast('Inactivity sweep executed');
+        await refreshDashboard();
+      } catch (err) {
+        showToast('Sweep error: ' + err.message, true);
+      } finally {
+        sweepBtn.disabled = false;
+      }
+    });
+  }
+
+  // Search clear button
+  const searchClearBtn = document.getElementById('search-clear-btn');
+  const searchInput = document.getElementById('search-input');
+  if (searchClearBtn && searchInput) {
+    searchClearBtn.addEventListener('click', async () => {
+      searchInput.value = '';
+      currentSearchQuery = '';
+      updateSearchControlsUI();
+      clearKeyboardSelection();
+      searchInput.focus();
+      await renderFeed();
+    });
+  }
 
   // Search input with 200ms debounce
-  const searchInput = document.getElementById('search-input');
-  searchInput.addEventListener('input', (e) => {
-    clearTimeout(searchDebounceTimer);
-    searchDebounceTimer = setTimeout(async () => {
-      currentSearchQuery = e.target.value;
-      await renderFeed();
-    }, 200);
-  });
+  if (searchInput) {
+    searchInput.addEventListener('input', (e) => {
+      updateSearchControlsUI();
+      clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(async () => {
+        currentSearchQuery = e.target.value;
+        clearKeyboardSelection();
+        await renderFeed();
+      }, 200);
+    });
+
+    // Pressing Enter in the search bar restores/focuses the top filtered result
+    searchInput.addEventListener('keydown', async (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        clearTimeout(searchDebounceTimer);
+        currentSearchQuery = searchInput.value;
+        await renderFeed();
+        const topRestoreBtn = document.querySelector('#tabs-feed .restore-btn');
+        if (topRestoreBtn) {
+          topRestoreBtn.focus();
+          topRestoreBtn.click();
+        }
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        clearTimeout(searchDebounceTimer);
+        const hadQuery = Boolean(searchInput.value || currentSearchQuery);
+        searchInput.value = '';
+        currentSearchQuery = '';
+        updateSearchControlsUI();
+        searchInput.blur();
+        clearKeyboardSelection();
+        if (hadQuery) {
+          await renderFeed();
+        }
+      } else if (e.key === 'ArrowDown') {
+        // Navigating down into the feed
+        e.preventDefault();
+        searchInput.blur();
+        updateKeyboardSelection(0);
+      }
+    });
+  }
 
   // Sort select
   const sortSelect = document.getElementById('panel-sort-select');
   if (sortSelect) {
     sortSelect.addEventListener('change', async (e) => {
       currentSortBy = e.target.value;
+      clearKeyboardSelection();
       await renderFeed();
     });
   }
 
-  // Pressing Enter in the search bar restores/focuses the top filtered result
-  searchInput.addEventListener('keydown', async (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      clearTimeout(searchDebounceTimer);
-      currentSearchQuery = searchInput.value;
-      await renderFeed();
-      const topRestoreBtn = document.querySelector('#tabs-feed .restore-btn');
-      if (topRestoreBtn) {
-        topRestoreBtn.focus();
-        topRestoreBtn.click();
-      }
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      clearTimeout(searchDebounceTimer);
-      const hadQuery = Boolean(searchInput.value || currentSearchQuery);
-      searchInput.value = '';
-      currentSearchQuery = '';
-      searchInput.blur();
-      if (hadQuery) {
-        await renderFeed();
-      }
-    }
-  });
-
   // Global keyboard shortcuts within the Side Panel
-  document.addEventListener('keydown', (e) => {
+  document.addEventListener('keydown', async (e) => {
+    const activeEl = document.activeElement;
+    const isTyping = activeEl && (
+      activeEl.tagName === 'INPUT' ||
+      activeEl.tagName === 'TEXTAREA' ||
+      activeEl.isContentEditable
+    );
+
     // Pressing '/' focuses the search bar #search-input (unless already typing in an input or textarea)
     if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      const activeEl = document.activeElement;
-      const isTyping = activeEl && (
-        activeEl.tagName === 'INPUT' ||
-        activeEl.tagName === 'TEXTAREA' ||
-        activeEl.isContentEditable
-      );
-      if (!isTyping) {
+      if (!isTyping && searchInput) {
         e.preventDefault();
+        clearKeyboardSelection();
         searchInput.focus();
         searchInput.select();
       }
+      return;
     }
 
     // Pressing 'Escape' clears search and blurs input
     if (e.key === 'Escape') {
       clearTimeout(searchDebounceTimer);
-      const hadQuery = Boolean(searchInput.value || currentSearchQuery);
-      searchInput.value = '';
+      const hadQuery = Boolean(searchInput?.value || currentSearchQuery);
+      if (searchInput) {
+        searchInput.value = '';
+        searchInput.blur();
+      }
       currentSearchQuery = '';
-      searchInput.blur();
+      updateSearchControlsUI();
+      clearKeyboardSelection();
       if (hadQuery) {
-        renderFeed();
+        await renderFeed();
+      }
+      return;
+    }
+
+    // Don't intercept navigation keys if user is typing
+    if (isTyping) return;
+
+    // j or ArrowDown -> navigate to next card
+    if (e.key === 'j' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      updateKeyboardSelection(selectedCardIndex + 1);
+    }
+    // k or ArrowUp -> navigate to previous card
+    else if (e.key === 'k' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      updateKeyboardSelection(selectedCardIndex - 1);
+    }
+    // Enter -> reopen currently selected card
+    else if (e.key === 'Enter') {
+      const cards = Array.from(document.querySelectorAll('#tabs-feed .tab-card:not(.removing)'));
+      if (selectedCardIndex >= 0 && selectedCardIndex < cards.length) {
+        e.preventDefault();
+        const selectedCard = cards[selectedCardIndex];
+        const restoreBtn = selectedCard.querySelector('.restore-btn') || selectedCard.querySelector('.card-title');
+        if (restoreBtn) {
+          restoreBtn.click();
+        }
       }
     }
   });
+
+  // Finalize any staged deletions when the panel unloads or closes
+  window.addEventListener('beforeunload', () => {
+    finalizePendingDeletes();
+  });
+  window.addEventListener('pagehide', () => {
+    finalizePendingDeletes();
+  });
+}
+
+async function closeSidePanel() {
+  try {
+    await finalizePendingDeletes();
+  } catch (err) {
+    console.debug('Error finalizing deletes before close:', err);
+  }
+
+  try {
+    const currentWin = await chrome.windows.getCurrent();
+    if (chrome.sidePanel?.close && currentWin?.id) {
+      await chrome.sidePanel.close({ windowId: currentWin.id });
+    }
+  } catch (err) {
+    console.debug('chrome.sidePanel.close error:', err);
+  }
+
+  try {
+    await chrome.runtime.sendMessage({ type: 'CLOSE_SIDE_PANEL' });
+  } catch {}
+
+  try {
+    window.close();
+  } catch {}
+}
+
+function updateKeyboardSelection(newIndex) {
+  const cards = Array.from(document.querySelectorAll('#tabs-feed .tab-card:not(.removing)'));
+  if (cards.length === 0) {
+    selectedCardIndex = -1;
+    return;
+  }
+
+  if (newIndex < 0) newIndex = 0;
+  if (newIndex >= cards.length) newIndex = cards.length - 1;
+
+  selectedCardIndex = newIndex;
+  cards.forEach((card, idx) => {
+    if (idx === selectedCardIndex) {
+      card.classList.add('keyboard-selected');
+      card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    } else {
+      card.classList.remove('keyboard-selected');
+    }
+  });
+}
+
+function clearKeyboardSelection() {
+  selectedCardIndex = -1;
+  const cards = document.querySelectorAll('#tabs-feed .tab-card');
+  cards.forEach(c => c.classList.remove('keyboard-selected'));
+}
+
+async function finalizePendingDeletes() {
+  for (const [tabId, item] of pendingDeletes.entries()) {
+    clearTimeout(item.timer);
+    try {
+      await deleteArchivedTab(tabId);
+    } catch (err) {
+      console.error('Error finalizing delete for tab', tabId, err);
+    }
+  }
+  pendingDeletes.clear();
 }
 
 async function refreshDashboard() {
   await updateStats();
   await updateTagFilters();
-  await renderFeed();
+  await renderFeed(true);
 }
 
 async function updateStats() {
   const stats = await getStats();
-  document.getElementById('stat-total').textContent = stats.total;
-  document.getElementById('stat-today').textContent = stats.today;
-  document.getElementById('stat-time').textContent = `${stats.totalReadingMinutes}m`;
+  const adjustedTotal = Math.max(0, stats.total - pendingDeletes.size);
+  const adjustedToday = Math.max(0, stats.today - pendingDeletes.size);
+
+  const totalEl = document.getElementById('stat-total');
+  const todayEl = document.getElementById('stat-today');
+  const timeEl = document.getElementById('stat-time');
+
+  if (totalEl) totalEl.textContent = adjustedTotal;
+  if (todayEl) todayEl.textContent = adjustedToday;
+  if (timeEl) timeEl.textContent = `${stats.totalReadingMinutes}m`;
 }
 
 async function updateTagFilters() {
   const container = document.getElementById('tag-filters');
+  if (!container) return;
   const tags = await getAllTags();
 
   if (tags.length === 0) {
@@ -200,6 +410,7 @@ async function updateTagFilters() {
   allPill.addEventListener('click', async () => {
     activeTagFilter = '';
     updateActiveTagStyles();
+    clearKeyboardSelection();
     await renderFeed();
   });
   container.appendChild(allPill);
@@ -212,6 +423,7 @@ async function updateTagFilters() {
     pill.addEventListener('click', async () => {
       activeTagFilter = activeTagFilter === tag ? '' : tag;
       updateActiveTagStyles();
+      clearKeyboardSelection();
       await renderFeed();
     });
     container.appendChild(pill);
@@ -229,8 +441,33 @@ function updateActiveTagStyles() {
   });
 }
 
-async function renderFeed() {
+function renderSkeletons() {
   const feed = document.getElementById('tabs-feed');
+  if (!feed) return;
+  feed.innerHTML = Array(3).fill(0).map(() => `
+    <div class="skeleton-card">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div class="skeleton-line" style="width: 32%;"></div>
+        <div class="skeleton-line" style="width: 16%;"></div>
+      </div>
+      <div class="skeleton-line" style="width: 75%; height: 16px;"></div>
+      <div class="skeleton-line" style="width: 100%; height: 32px; border-radius: 6px;"></div>
+      <div style="display:flex; gap:6px;">
+        <div class="skeleton-line" style="width: 50px; height: 18px; border-radius: 12px;"></div>
+        <div class="skeleton-line" style="width: 60px; height: 18px; border-radius: 12px;"></div>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function renderFeed(showSkeletons = false) {
+  const feed = document.getElementById('tabs-feed');
+  if (!feed) return;
+
+  if (showSkeletons || feed.children.length === 0) {
+    renderSkeletons();
+  }
+
   const tabs = await getArchivedTabs({
     query: currentSearchQuery,
     tag: activeTagFilter,
@@ -238,7 +475,10 @@ async function renderFeed() {
     limit: 50
   });
 
-  if (tabs.length === 0) {
+  // Filter out any tabs with pending staged deletions
+  const visibleTabs = tabs.filter(tab => !pendingDeletes.has(tab.id));
+
+  if (visibleTabs.length === 0) {
     feed.innerHTML = `
       <div class="empty-state">
         <svg class="empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
@@ -250,19 +490,21 @@ async function renderFeed() {
   }
 
   feed.innerHTML = '';
-  for (const tab of tabs) {
+  for (const tab of visibleTabs) {
     const card = document.createElement('div');
-    card.className = 'tab-card';
+    card.className = currentDensity === 'compact' ? 'tab-card compact' : 'tab-card';
+    card.dataset.id = tab.id;
 
     const timeAgo = formatTimeAgo(tab.capturedAt);
     const faviconSrc = tab.favIconUrl || `https://www.google.com/s2/favicons?domain=${tab.domain}&sz=32`;
 
-    const bulletsHtml = (tab.summary?.bullets || [])
-      .map(b => `<li>${escapeHtml(b)}</li>`)
+    const bullets = tab.summary?.bullets || [];
+    const bulletsHtml = bullets
+      .map(b => `<li>${highlightSearch(b, currentSearchQuery)}</li>`)
       .join('');
 
     const tagsHtml = (tab.summary?.tags || [])
-      .map(t => `<span class="card-tag">#${escapeHtml(t.replace(/^#/, ''))}</span>`)
+      .map(t => `<span class="card-tag">#${highlightSearch(t.replace(/^#/, ''), currentSearchQuery)}</span>`)
       .join('');
 
     const isSleeping = tab.status === 'discarded';
@@ -270,21 +512,35 @@ async function renderFeed() {
       ? `<span class="badge-status sleeping" title="${escapeHtml(tab.closureReason || 'Sleeping tab (RAM suspended)')}">💤 Sleeping</span>`
       : `<span class="badge-status archived" title="${escapeHtml(tab.closureReason || 'Archived to knowledge base')}">🗄️ Archived</span>`;
 
+    const readingTimeMinutes = tab.readingTimeMinutes || 1;
+    const readingTimeHtml = `<span class="card-reading-time">${readingTimeMinutes}m read</span>`;
+
+    const takeawaysSection = bullets.length > 0
+      ? `
+        <button class="takeaways-toggle" type="button" aria-expanded="false" title="Toggle key takeaways">
+          <span class="takeaways-chevron">▶</span>
+          Key Takeaways (${bullets.length})
+        </button>
+        <ul class="card-bullets collapsed">${bulletsHtml}</ul>
+      `
+      : '';
+
     card.innerHTML = `
       <div class="card-header">
         <div class="card-source">
           <img class="card-favicon" src="${escapeHtml(faviconSrc)}" onerror="this.style.display='none'">
-          <span class="card-domain">${escapeHtml(tab.domain)}</span>
+          <span class="card-domain">${highlightSearch(tab.domain, currentSearchQuery)}</span>
+          ${readingTimeHtml}
           ${statusBadge}
         </div>
         <span class="card-time">${timeAgo}</span>
       </div>
 
-      <div class="card-title" title="${escapeHtml(tab.title)}">${escapeHtml(tab.title)}</div>
+      <div class="card-title" title="${escapeHtml(tab.title)}">${highlightSearch(tab.title, currentSearchQuery)}</div>
 
-      ${tab.summary?.tldr ? `<div class="card-tldr">${escapeHtml(tab.summary.tldr)}</div>` : ''}
+      ${tab.summary?.tldr ? `<div class="card-tldr">${highlightSearch(tab.summary.tldr, currentSearchQuery)}</div>` : ''}
 
-      ${bulletsHtml ? `<ul class="card-bullets">${bulletsHtml}</ul>` : ''}
+      ${takeawaysSection}
 
       ${tagsHtml ? `<div class="card-tags">${tagsHtml}</div>` : ''}
 
@@ -304,7 +560,21 @@ async function renderFeed() {
       </div>
     `;
 
-    // Bind card events
+    // Progressive disclosure toggle event
+    const takeawaysBtn = card.querySelector('.takeaways-toggle');
+    if (takeawaysBtn) {
+      takeawaysBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isOpen = takeawaysBtn.classList.toggle('open');
+        takeawaysBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+        const bulletsList = card.querySelector('.card-bullets');
+        if (bulletsList) {
+          bulletsList.classList.toggle('collapsed', !isOpen);
+        }
+      });
+    }
+
+    // Card Restore Action
     const handleRestore = async () => {
       const res = await chrome.runtime.sendMessage({
         type: 'RESTORE_TAB',
@@ -318,22 +588,102 @@ async function renderFeed() {
       }
     };
 
-    card.querySelector('.card-title').addEventListener('click', handleRestore);
-    card.querySelector('.restore-btn').addEventListener('click', handleRestore);
+    card.querySelector('.card-title')?.addEventListener('click', handleRestore);
+    card.querySelector('.restore-btn')?.addEventListener('click', handleRestore);
 
-    card.querySelector('.copy-btn').addEventListener('click', () => {
+    // Copy Summary
+    card.querySelector('.copy-btn')?.addEventListener('click', (e) => {
+      e.stopPropagation();
       const summaryText = `# ${tab.title}\n${tab.url}\n\nTL;DR: ${tab.summary?.tldr || ''}\n\nKey Takeaways:\n${(tab.summary?.bullets || []).map(b => `- ${b}`).join('\n')}`;
       navigator.clipboard.writeText(summaryText);
       showToast('Copied summary to clipboard!');
     });
 
-    card.querySelector('.delete-btn').addEventListener('click', async () => {
-      await deleteArchivedTab(tab.id);
-      showToast('Tab removed from Wiki');
-      await refreshDashboard();
-    });
+    // 5-Second Undo Staged Deletion
+    const deleteBtn = card.querySelector('.delete-btn');
+    if (deleteBtn) {
+      deleteBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const tabId = tab.id;
+        lastDeletedTabId = tabId;
+
+        // 1. Smooth exit animation on card
+        card.classList.add('removing');
+
+        setTimeout(() => {
+          if (card.parentNode) {
+            card.remove();
+          }
+          const remaining = document.querySelectorAll('#tabs-feed .tab-card:not(.removing)');
+          if (remaining.length === 0) {
+            renderFeed();
+          }
+        }, 260);
+
+        const settings = await getSettings();
+        const deferUntilClose = Boolean(settings.deferDeletionsUntilClose);
+
+        // 2. Stage deletion: if deferUntilClose is true, do not auto-finalize with timer
+        let timer = null;
+        if (!deferUntilClose) {
+          timer = setTimeout(async () => {
+            pendingDeletes.delete(tabId);
+            if (lastDeletedTabId === tabId) {
+              lastDeletedTabId = null;
+            }
+            try {
+              await deleteArchivedTab(tabId);
+              await updateStats();
+            } catch (err) {
+              console.error('Error deleting tab:', err);
+            }
+          }, 5000);
+        }
+
+        pendingDeletes.set(tabId, { timer, tabData: tab, deferUntilClose });
+        await updateStats();
+
+        // 3. Show undo toast (with countdown if timing out, or session notice if deferred)
+        const toastMsg = deferUntilClose
+          ? `Tab removed (${pendingDeletes.size} pending deletion on close)`
+          : 'Tab removed from Wiki';
+        const duration = deferUntilClose ? 8000 : 5000;
+
+        showToast(toastMsg, false, async () => {
+          const targetId = tabId;
+          const pending = pendingDeletes.get(targetId);
+          if (pending) {
+            if (pending.timer) {
+              clearTimeout(pending.timer);
+            }
+            pendingDeletes.delete(targetId);
+            if (lastDeletedTabId === targetId) {
+              lastDeletedTabId = null;
+            }
+            hideToast();
+            await refreshDashboard();
+
+            // Highlight the restored card
+            const restoredCard = document.querySelector(`.tab-card[data-id="${targetId}"]`);
+            if (restoredCard) {
+              restoredCard.classList.add('keyboard-selected');
+              restoredCard.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+              setTimeout(() => {
+                restoredCard.classList.remove('keyboard-selected');
+              }, 1500);
+            }
+            showToast('Tab restored!');
+          }
+        }, duration, deferUntilClose);
+      });
+    }
 
     feed.appendChild(card);
+  }
+
+  // Restore keyboard selection if active
+  if (selectedCardIndex >= 0) {
+    updateKeyboardSelection(selectedCardIndex);
   }
 }
 
@@ -355,12 +705,86 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-function showToast(message, isError = false) {
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Safely escapes HTML and wraps matching search terms in <mark class="search-highlight">
+ */
+function highlightSearch(text, query) {
+  if (!text) return '';
+  if (!query || !query.trim()) return escapeHtml(text);
+  const trimmed = query.trim();
+  const escaped = escapeRegex(trimmed);
+  const regex = new RegExp(`(${escaped})`, 'gi');
+  const parts = String(text).split(regex);
+  return parts.map(part => {
+    if (part.toLowerCase() === trimmed.toLowerCase()) {
+      return `<mark class="search-highlight">${escapeHtml(part)}</mark>`;
+    }
+    return escapeHtml(part);
+  }).join('');
+}
+
+function showToast(message, isError = false, undoCallback = null, duration = 2600, deferUntilClose = false) {
   const toast = document.getElementById('toast');
-  toast.textContent = message;
+  const toastMsg = document.getElementById('toast-message');
+  const undoBtn = document.getElementById('toast-undo-btn');
+  const progressBar = document.getElementById('toast-progress');
+
+  if (!toast) return;
+
+  clearTimeout(toastTimeout);
+
+  if (toastMsg) {
+    toastMsg.textContent = message;
+  } else {
+    toast.textContent = message;
+  }
+
   toast.style.background = isError ? '#ef4444' : '#1e293b';
+
+  // Handle undo button
+  if (undoBtn) {
+    if (undoCallback) {
+      undoBtn.classList.remove('hidden');
+      undoBtn.onclick = (e) => {
+        e.stopPropagation();
+        undoCallback();
+      };
+    } else {
+      undoBtn.classList.add('hidden');
+      undoBtn.onclick = null;
+    }
+  }
+
+  // Handle countdown progress bar (suppressed if deferUntilClose is true)
+  if (progressBar) {
+    progressBar.classList.remove('running');
+    progressBar.style.animation = 'none';
+    // Force DOM reflow to restart CSS animation
+    void progressBar.offsetWidth;
+    if (undoCallback && duration > 0 && !deferUntilClose) {
+      progressBar.style.animation = `toastCountdown ${duration}ms linear forwards`;
+      progressBar.classList.add('running');
+    }
+  }
+
   toast.classList.remove('hidden');
-  setTimeout(() => {
-    toast.classList.add('hidden');
-  }, 2600);
+
+  toastTimeout = setTimeout(() => {
+    hideToast();
+  }, duration);
+}
+
+function hideToast() {
+  const toast = document.getElementById('toast');
+  const progressBar = document.getElementById('toast-progress');
+  if (toast) toast.classList.add('hidden');
+  if (progressBar) {
+    progressBar.classList.remove('running');
+    progressBar.style.animation = 'none';
+  }
+  clearTimeout(toastTimeout);
 }

@@ -491,6 +491,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
 
+      if (message.type === 'CLOSE_SIDE_PANEL') {
+        try {
+          if (chrome.sidePanel && typeof chrome.sidePanel.close === 'function') {
+            const windowId = message.windowId || sender.tab?.windowId;
+            if (windowId) {
+              await chrome.sidePanel.close({ windowId });
+            } else {
+              const currentWin = await chrome.windows.getCurrent();
+              await chrome.sidePanel.close({ windowId: currentWin.id });
+            }
+          }
+          sendResponse({ success: true });
+        } catch (err) {
+          console.debug('[TabSum] Close side panel error:', err);
+          sendResponse({ success: false, error: err.message });
+        }
+        return;
+      }
+
       sendResponse({ success: false, error: 'Unknown message type' });
     } catch (err) {
       console.error('[TabSum] Message handling error:', err);

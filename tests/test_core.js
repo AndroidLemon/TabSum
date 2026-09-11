@@ -50,6 +50,8 @@ assert.strictEqual(DEFAULT_SETTINGS.archiveMode, 'hybrid');
 assert.strictEqual(DEFAULT_SETTINGS.ignorePinnedTabs, true);
 assert.strictEqual(DEFAULT_SETTINGS.maxStoredItems, 1000);
 assert.strictEqual(DEFAULT_SETTINGS.autoPruneEnabled, true);
+assert.strictEqual(DEFAULT_SETTINGS.deferDeletionsUntilClose, false);
+assert.strictEqual(DEFAULT_SETTINGS.closeSidebarOnOpenDashboard, true);
 assert.ok(DEFAULT_SETTINGS.excludedDomains.includes('docs.google.com'));
 assert.ok(DEFAULT_SETTINGS.excludedDomains.includes('mail.google.com'));
 console.log('✓ Settings defaults passed');
@@ -78,6 +80,9 @@ import './test_storage_quota.js';
 // Test 7: Multi-Attribute Sorting
 import { runSortingTests } from './test_sorting.js';
 await runSortingTests();
+
+// Test 8: Wiki & Modal UX (Highlighting, Typography, Dialog Markup)
+import './test_wiki_ux.js';
 
 console.log('--- All Unit Verification Tests Passed Successfully! ---');
 

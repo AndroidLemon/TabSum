@@ -10,7 +10,9 @@ import {
   deleteArchivedTab,
   updateTabStatus,
   exportTabs,
-  getTabById
+  getTabById,
+  toggleFavoriteTab,
+  getSettings
 } from '../storage/db.js';
 
 let currentTimeFilter = '';
@@ -20,6 +22,9 @@ let searchQuery = '';
 let currentSortBy = 'newest';
 
 let searchDebounceTimer = null;
+let toastTimeout = null;
+let activeReaderTab = null;
+const pendingDeletes = new Map(); // tabId -> { timer, tabData, cardElement, nextSibling, parent }
 
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   if (document.readyState === 'loading') {
@@ -31,18 +36,52 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     setupEventListeners();
     refreshWiki();
   }
+
+  // Ensure any pending deletions are committed if the window unloads or closes
+  const finalizeWikiDeletes = () => {
+    for (const [tabId, entry] of pendingDeletes.entries()) {
+      if (entry.timer) clearTimeout(entry.timer);
+      deleteArchivedTab(tabId);
+    }
+    pendingDeletes.clear();
+  };
+  window.addEventListener('beforeunload', finalizeWikiDeletes);
+  window.addEventListener('pagehide', finalizeWikiDeletes);
 }
 
 function setupEventListeners() {
-  // Search bar with 200ms debounce
+  // Search bar with 200ms debounce and clear button
   const searchInput = document.getElementById('wiki-search');
+  const searchClearBtn = document.getElementById('wiki-search-clear-btn');
+
+  const updateClearBtnVisibility = () => {
+    if (searchClearBtn) {
+      if (searchInput.value.length > 0) {
+        searchClearBtn.classList.remove('hidden');
+      } else {
+        searchClearBtn.classList.add('hidden');
+      }
+    }
+  };
+
   searchInput.addEventListener('input', (e) => {
+    updateClearBtnVisibility();
     clearTimeout(searchDebounceTimer);
     searchDebounceTimer = setTimeout(async () => {
       searchQuery = e.target.value;
       await renderGrid();
     }, 200);
   });
+
+  if (searchClearBtn) {
+    searchClearBtn.addEventListener('click', async () => {
+      searchInput.value = '';
+      searchQuery = '';
+      updateClearBtnVisibility();
+      searchInput.focus();
+      await renderGrid();
+    });
+  }
 
   // Timeline navigation
   const navItems = document.querySelectorAll('.nav-item');
@@ -163,16 +202,53 @@ function setupEventListeners() {
     chrome.runtime.openOptionsPage();
   });
 
-  // Reader Modal Close
-  document.getElementById('modal-close-btn').addEventListener('click', () => {
-    document.getElementById('reader-modal').classList.add('hidden');
-  });
+  // Modern HTML5 <dialog> Reader View Setup
+  const readerDialog = document.getElementById('reader-dialog');
+  const modalCloseBtn = document.getElementById('modal-close-btn');
+  const modalCopyBtn = document.getElementById('modal-copy-btn');
 
-  document.getElementById('reader-modal').addEventListener('click', (e) => {
-    if (e.target.id === 'reader-modal') {
-      document.getElementById('reader-modal').classList.add('hidden');
+  if (readerDialog) {
+    // Light-dismiss fallback: clicking backdrop closes dialog
+    readerDialog.addEventListener('click', (event) => {
+      if (event.target === readerDialog) {
+        const rect = readerDialog.getBoundingClientRect();
+        const isInDialog = (
+          rect.top <= event.clientY &&
+          event.clientY <= rect.top + rect.height &&
+          rect.left <= event.clientX &&
+          event.clientX <= rect.left + rect.width
+        );
+        if (!isInDialog) {
+          readerDialog.close();
+        }
+      }
+    });
+
+    if (modalCloseBtn) {
+      modalCloseBtn.addEventListener('click', () => {
+        readerDialog.close();
+      });
     }
-  });
+
+    if (modalCopyBtn) {
+      modalCopyBtn.addEventListener('click', async () => {
+        if (!activeReaderTab) return;
+        const md = formatSingleNote(activeReaderTab, 'markdown');
+        await navigator.clipboard.writeText(md);
+        const originalHtml = modalCopyBtn.innerHTML;
+        modalCopyBtn.innerHTML = `
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
+          <span>✓ Copied</span>
+        `;
+        modalCopyBtn.classList.add('copied');
+        showToast('Copied full note Markdown!');
+        setTimeout(() => {
+          modalCopyBtn.innerHTML = originalHtml;
+          modalCopyBtn.classList.remove('copied');
+        }, 1500);
+      });
+    }
+  }
 }
 
 async function refreshWiki() {
@@ -183,8 +259,17 @@ async function refreshWiki() {
 
 async function updateCounts() {
   const stats = await getStats();
-  document.getElementById('count-all').textContent = stats.total;
-  document.getElementById('count-today').textContent = stats.today;
+  const allEl = document.getElementById('count-all');
+  if (allEl) allEl.textContent = stats.total;
+
+  const todayEl = document.getElementById('count-today');
+  if (todayEl) todayEl.textContent = stats.today;
+
+  const favEl = document.getElementById('count-favorites');
+  if (favEl) {
+    const favTabs = await getArchivedTabs({ favoriteOnly: true, limit: 10000 });
+    favEl.textContent = favTabs.filter(t => !pendingDeletes.has(t.id)).length;
+  }
 }
 
 async function renderSidebarFilters() {
@@ -237,6 +322,9 @@ function updateFilterBanner() {
   } else if (currentDomainFilter) {
     banner.classList.remove('hidden');
     label.textContent = `Filtered by domain: ${currentDomainFilter}`;
+  } else if (currentTimeFilter === 'favorites') {
+    banner.classList.remove('hidden');
+    label.textContent = `Filtered by: Favorites ⭐`;
   } else {
     banner.classList.add('hidden');
   }
@@ -246,14 +334,19 @@ async function renderGrid() {
   const container = document.getElementById('cards-container');
   const countLabel = document.getElementById('results-count');
 
-  const tabs = await getArchivedTabs({
+  const isFavoritesOnly = currentTimeFilter === 'favorites';
+  const rawTabs = await getArchivedTabs({
     query: searchQuery,
     tag: currentTagFilter,
     domain: currentDomainFilter,
-    timeRange: currentTimeFilter,
+    timeRange: isFavoritesOnly ? '' : currentTimeFilter,
+    favoriteOnly: isFavoritesOnly,
     sortBy: currentSortBy,
     limit: 200
   });
+
+  // Filter out any tabs that are currently staged for deletion
+  const tabs = rawTabs.filter(t => !pendingDeletes.has(t.id));
 
   countLabel.textContent = `${tabs.length} ${tabs.length === 1 ? 'summary' : 'summaries'}`;
 
@@ -273,14 +366,18 @@ async function renderGrid() {
   for (const tab of tabs) {
     const card = document.createElement('article');
     card.className = 'wiki-card';
+    card.dataset.id = tab.id;
 
     const faviconSrc = tab.favIconUrl || `https://www.google.com/s2/favicons?domain=${tab.domain}&sz=32`;
     const bulletsHtml = (tab.summary?.bullets || [])
-      .map(b => `<li>${escapeHtml(b)}</li>`)
+      .map(b => `<li>${highlightSearch(b, searchQuery)}</li>`)
       .join('');
 
     const tagsHtml = (tab.summary?.tags || [])
-      .map(t => `<span class="wiki-tag-pill" data-tag="${escapeHtml(t.replace(/^#/, ''))}">#${escapeHtml(t.replace(/^#/, ''))}</span>`)
+      .map(t => {
+        const clean = t.replace(/^#/, '');
+        return `<span class="wiki-tag-pill" data-tag="${escapeHtml(clean)}">#${highlightSearch(clean, searchQuery)}</span>`;
+      })
       .join('');
 
     const isSleeping = tab.status === 'discarded';
@@ -292,15 +389,20 @@ async function renderGrid() {
       <div class="card-top">
         <div class="card-site-info">
           <img class="site-icon" src="${escapeHtml(faviconSrc)}" onerror="this.style.display='none'">
-          <span class="site-domain">${escapeHtml(tab.domain)}</span>
+          <span class="site-domain">${highlightSearch(tab.domain, searchQuery)}</span>
           ${statusBadge}
         </div>
-        <span class="card-reading-time">${tab.readingTimeMinutes || 1} min read</span>
+        <div class="card-top-right">
+          <span class="card-reading-time">${tab.readingTimeMinutes || 1} min read</span>
+          <button class="star-btn ${tab.isFavorite ? 'active' : ''}" title="${tab.isFavorite ? 'Remove from favorites' : 'Add to favorites'}" aria-label="Favorite">
+            <svg width="15" height="15" viewBox="0 0 24 24" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+          </button>
+        </div>
       </div>
 
-      <h3 class="wiki-card-title">${escapeHtml(tab.title)}</h3>
+      <h3 class="wiki-card-title">${highlightSearch(tab.title, searchQuery)}</h3>
 
-      ${tab.summary?.tldr ? `<div class="wiki-card-tldr"><strong>TL;DR:</strong> ${escapeHtml(tab.summary.tldr)}</div>` : ''}
+      ${tab.summary?.tldr ? `<div class="wiki-card-tldr"><strong>TL;DR:</strong> ${highlightSearch(tab.summary.tldr, searchQuery)}</div>` : ''}
 
       ${bulletsHtml ? `<ul class="wiki-card-bullets">${bulletsHtml}</ul>` : ''}
 
@@ -342,20 +444,52 @@ async function renderGrid() {
     card.querySelector('.wiki-card-title').addEventListener('click', handleRestore);
     card.querySelector('.restore-action-btn').addEventListener('click', handleRestore);
 
+    // Star Toggle
+    const starBtn = card.querySelector('.star-btn');
+    starBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const updated = await toggleFavoriteTab(tab.id);
+      tab.isFavorite = updated ? updated.isFavorite : !tab.isFavorite;
+      starBtn.classList.toggle('active', tab.isFavorite);
+      starBtn.title = tab.isFavorite ? 'Remove from favorites' : 'Add to favorites';
+      showToast(tab.isFavorite ? 'Starred summary ⭐' : 'Removed from favorites');
+      await updateCounts();
+      if (currentTimeFilter === 'favorites' && !tab.isFavorite) {
+        await renderGrid();
+      }
+    });
+
+    // Reader View
     card.querySelector('.reader-btn').addEventListener('click', () => {
       openReaderModal(tab);
     });
 
-    card.querySelector('.copy-btn').addEventListener('click', () => {
+    // Copy Markdown with Tactile Feedback
+    const copyBtn = card.querySelector('.copy-btn');
+    copyBtn.addEventListener('click', async () => {
       const md = `## [${tab.title}](${tab.url})\n\n**TL;DR**: ${tab.summary?.tldr || ''}\n\n### Key Takeaways:\n${(tab.summary?.bullets || []).map(b => `- ${b}`).join('\n')}\n\n*Captured via TabSum*`;
-      navigator.clipboard.writeText(md);
+      await navigator.clipboard.writeText(md);
+      const originalHtml = copyBtn.innerHTML;
+      const originalTitle = copyBtn.title;
+      copyBtn.innerHTML = `
+        <span class="copied-badge">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>
+          ✓ Copied
+        </span>
+      `;
+      copyBtn.classList.add('copied');
+      copyBtn.title = 'Copied!';
       showToast('Copied summary Markdown!');
+      setTimeout(() => {
+        copyBtn.innerHTML = originalHtml;
+        copyBtn.classList.remove('copied');
+        copyBtn.title = originalTitle;
+      }, 1500);
     });
 
-    card.querySelector('.delete-btn').addEventListener('click', async () => {
-      await deleteArchivedTab(tab.id);
-      showToast('Deleted summary');
-      await refreshWiki();
+    // Staged deletion with 5-second undo
+    card.querySelector('.delete-btn').addEventListener('click', () => {
+      stageCardDeletion(tab, card);
     });
 
     card.querySelectorAll('.wiki-tag-pill').forEach(pill => {
@@ -372,42 +506,244 @@ async function renderGrid() {
 }
 
 function openReaderModal(tab) {
-  const modal = document.getElementById('reader-modal');
-  document.getElementById('modal-title').textContent = tab.title;
-  const sourceLink = document.getElementById('modal-source-link');
-  sourceLink.textContent = tab.url;
+  activeReaderTab = tab;
+  const readerDialog = document.getElementById('reader-dialog');
+  if (!readerDialog) return;
 
-  // Strict scheme validation: only set href if http: or https:
-  if (/^https?:\/\//i.test(tab.url)) {
-    sourceLink.href = tab.url;
-  } else {
-    sourceLink.removeAttribute('href');
+  const titleEl = document.getElementById('modal-title');
+  if (titleEl) titleEl.textContent = tab.title || 'Untitled Tab';
+
+  const sourceLink = document.getElementById('modal-source-link');
+  if (sourceLink) {
+    sourceLink.textContent = tab.url || '';
+    // Strict scheme validation: only set href if http: or https:
+    if (/^https?:\/\//i.test(tab.url)) {
+      sourceLink.href = tab.url;
+    } else {
+      sourceLink.removeAttribute('href');
+    }
   }
 
   const summaryBox = document.getElementById('modal-summary-box');
-  summaryBox.innerHTML = `
-    <strong>Summary Overview</strong>
-    <p style="margin-top:6px; color:var(--text-secondary);">${escapeHtml(tab.summary?.tldr || 'No overview available')}</p>
-  `;
+  if (summaryBox) {
+    summaryBox.innerHTML = `
+      <strong>Summary Overview</strong>
+      <p style="margin-top:6px; color:var(--text-secondary);">${escapeHtml(tab.summary?.tldr || 'No overview available')}</p>
+    `;
+  }
 
-  document.getElementById('modal-text-content').textContent = tab.cleanText || 'No snapshot text saved.';
-  modal.classList.remove('hidden');
+  const textContent = document.getElementById('modal-text-content');
+  if (textContent) {
+    textContent.innerHTML = formatExtractedArticle(tab.cleanText);
+  }
+
+  if (typeof readerDialog.showModal === 'function') {
+    readerDialog.showModal();
+  } else {
+    readerDialog.setAttribute('open', '');
+  }
 }
 
-function escapeHtml(str) {
+/**
+ * Format raw article snapshot text into readable semantic HTML paragraphs and headings
+ * @param {string} text
+ * @returns {string} HTML string
+ */
+export function formatExtractedArticle(text) {
+  if (!text || typeof text !== 'string' || !text.trim()) {
+    return '<p class="empty-article-text">No snapshot text saved for this article.</p>';
+  }
+
+  const blocks = text.split(/\n\s*\n+/);
+  return blocks.map(block => {
+    const trimmed = block.trim();
+    if (!trimmed) return '';
+
+    // Headings
+    if (/^#\s+(.+)$/.test(trimmed)) {
+      return `<h2>${escapeHtml(trimmed.replace(/^#\s+/, ''))}</h2>`;
+    }
+    if (/^##\s+(.+)$/.test(trimmed)) {
+      return `<h3>${escapeHtml(trimmed.replace(/^##\s+/, ''))}</h3>`;
+    }
+    if (/^###\s+(.+)$/.test(trimmed)) {
+      return `<h4>${escapeHtml(trimmed.replace(/^###\s+/, ''))}</h4>`;
+    }
+    if (/^####\s+(.+)$/.test(trimmed)) {
+      return `<h5>${escapeHtml(trimmed.replace(/^####\s+/, ''))}</h5>`;
+    }
+
+    // Blockquote
+    if (/^>\s*(.+)$/s.test(trimmed)) {
+      return `<blockquote>${escapeHtml(trimmed.replace(/^>\s*/gm, ''))}</blockquote>`;
+    }
+
+    // Paragraph
+    const formatted = escapeHtml(trimmed).replace(/\n/g, '<br>');
+    return `<p>${formatted}</p>`;
+  }).filter(Boolean).join('\n');
+}
+
+/**
+ * Safely escapes HTML and highlights occurrences of query with <mark class="search-highlight">
+ * @param {string} text
+ * @param {string} query
+ * @returns {string} Safe HTML string
+ */
+export function highlightSearch(text, query) {
+  if (!text) return '';
+  if (!query || typeof query !== 'string' || !query.trim()) {
+    return escapeHtml(text);
+  }
+  const trimmed = query.trim();
+  const escapedQuery = trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(`(${escapedQuery})`, 'gi');
+  const parts = String(text).split(regex);
+  return parts.map(part => {
+    if (part.toLowerCase() === trimmed.toLowerCase()) {
+      return `<mark class="search-highlight">${escapeHtml(part)}</mark>`;
+    }
+    return escapeHtml(part);
+  }).join('');
+}
+
+export function escapeHtml(str) {
   if (!str) return '';
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
+  if (typeof document !== 'undefined') {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function showToast(message) {
   const toast = document.getElementById('toast');
-  toast.textContent = message;
+  if (!toast) return;
+  clearTimeout(toastTimeout);
+  toast.innerHTML = `<span class="toast-message">${escapeHtml(message)}</span>`;
   toast.classList.remove('hidden');
-  setTimeout(() => {
+  toastTimeout = setTimeout(() => {
     toast.classList.add('hidden');
   }, 2500);
+}
+
+function showUndoToast(message, onUndo, duration = 5000, deferUntilClose = false) {
+  const toast = document.getElementById('toast');
+  if (!toast) return;
+  clearTimeout(toastTimeout);
+
+  const progressBarHtml = deferUntilClose ? '' : '<div class="toast-progress-bar"></div>';
+
+  toast.innerHTML = `
+    <div class="toast-content">
+      <span class="toast-message">${escapeHtml(message)}</span>
+      <button class="toast-undo-btn" id="toast-undo-action-btn">Undo</button>
+    </div>
+    ${progressBarHtml}
+  `;
+  toast.classList.remove('hidden');
+
+  const undoBtn = toast.querySelector('#toast-undo-action-btn');
+  if (undoBtn) {
+    undoBtn.addEventListener('click', () => {
+      toast.classList.add('hidden');
+      clearTimeout(toastTimeout);
+      if (onUndo) onUndo();
+    });
+  }
+
+  toastTimeout = setTimeout(() => {
+    toast.classList.add('hidden');
+  }, duration);
+}
+
+/**
+ * Stage card deletion (respecting deferDeletionsUntilClose setting)
+ * @param {Object} tab
+ * @param {HTMLElement} cardElement
+ */
+export async function stageCardDeletion(tab, cardElement) {
+  const tabId = tab.id;
+  if (pendingDeletes.has(tabId)) return;
+
+  // Animate card removal
+  cardElement.classList.add('removing');
+
+  // Record DOM placement for restoration
+  const nextSibling = cardElement.nextElementSibling;
+  const parent = cardElement.parentElement;
+
+  let settings = {};
+  try {
+    settings = await getSettings();
+  } catch (err) {
+    console.debug('Failed to get settings in stageCardDeletion:', err);
+  }
+  const deferUntilClose = Boolean(settings.deferDeletionsUntilClose);
+
+  // Staged deletion timer (only if not deferred until close)
+  let timer = null;
+  if (!deferUntilClose) {
+    timer = setTimeout(async () => {
+      pendingDeletes.delete(tabId);
+      if (cardElement.parentElement) {
+        cardElement.remove();
+      }
+      await deleteArchivedTab(tabId);
+      await updateCounts();
+      await renderSidebarFilters();
+    }, 5000);
+  }
+
+  pendingDeletes.set(tabId, {
+    timer,
+    tabData: tab,
+    cardElement,
+    nextSibling,
+    parent,
+    deferUntilClose
+  });
+
+  const toastMsg = deferUntilClose
+    ? `Summary removed (${pendingDeletes.size} pending deletion on close)`
+    : 'Summary removed from Wiki';
+  const duration = deferUntilClose ? 8000 : 5000;
+
+  showUndoToast(toastMsg, async () => {
+    const pending = pendingDeletes.get(tabId);
+    if (!pending) return;
+
+    if (pending.timer) {
+      clearTimeout(pending.timer);
+    }
+    pendingDeletes.delete(tabId);
+
+    // Restore card into DOM
+    if (pending.parent) {
+      if (pending.nextSibling && pending.nextSibling.parentElement === pending.parent) {
+        pending.parent.insertBefore(pending.cardElement, pending.nextSibling);
+      } else {
+        pending.parent.appendChild(pending.cardElement);
+      }
+    }
+
+    // Reset styles & pulse highlight
+    pending.cardElement.classList.remove('removing');
+    pending.cardElement.classList.add('undo-restored');
+    setTimeout(() => {
+      pending.cardElement.classList.remove('undo-restored');
+    }, 1200);
+
+    showToast('Summary restored');
+    await updateCounts();
+    await renderSidebarFilters();
+  }, duration, deferUntilClose);
 }
 
 /**

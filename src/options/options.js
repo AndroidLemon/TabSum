@@ -35,6 +35,16 @@ function populateForm(settings) {
     ignorePinnedToggle.checked = settings.ignorePinnedTabs !== undefined ? Boolean(settings.ignorePinnedTabs) : true;
   }
 
+  const closeSidebarToggle = document.getElementById('close-sidebar-toggle');
+  if (closeSidebarToggle) {
+    closeSidebarToggle.checked = settings.closeSidebarOnOpenDashboard !== false;
+  }
+
+  const deferDeletionsToggle = document.getElementById('defer-deletions-toggle');
+  if (deferDeletionsToggle) {
+    deferDeletionsToggle.checked = Boolean(settings.deferDeletionsUntilClose);
+  }
+
   document.getElementById('notif-toggle').checked = Boolean(settings.notificationsEnabled);
   document.getElementById('ai-provider-select').value = settings.aiProvider || 'auto';
   document.getElementById('gemini-api-key').value = settings.geminiApiKey || '';
@@ -104,6 +114,26 @@ function setupListeners() {
     await saveSettings(currentSettings);
     showToast('Notification preference saved');
   });
+
+  // Close Sidebar on Dashboard Open
+  const closeSidebarToggle = document.getElementById('close-sidebar-toggle');
+  if (closeSidebarToggle) {
+    closeSidebarToggle.addEventListener('change', async (e) => {
+      currentSettings.closeSidebarOnOpenDashboard = e.target.checked;
+      await saveSettings(currentSettings);
+      showToast('Sidebar preference saved');
+    });
+  }
+
+  // Defer Deletions Until Closed
+  const deferDeletionsToggle = document.getElementById('defer-deletions-toggle');
+  if (deferDeletionsToggle) {
+    deferDeletionsToggle.addEventListener('change', async (e) => {
+      currentSettings.deferDeletionsUntilClose = e.target.checked;
+      await saveSettings(currentSettings);
+      showToast('Deletion preference saved');
+    });
+  }
 
   // AI Provider
   document.getElementById('ai-provider-select').addEventListener('change', async (e) => {

@@ -468,6 +468,8 @@ export const DEFAULT_SETTINGS = {
   timeoutMinutes: 60,
   archiveMode: 'hybrid', // 'hybrid' (smart adaptive) | 'discard' (soft suspension) | 'close' (auto-close)
   ignorePinnedTabs: true, // Never archive or suspend pinned tabs unless explicitly allowed
+  deferDeletionsUntilClose: false, // Deletions are not finalized until the dashboard or sidebar is closed
+  closeSidebarOnOpenDashboard: true, // Automatically close sidebar when opening full wiki dashboard
   aiProvider: 'auto',     // 'auto' | 'prompt-api' | 'heuristic' | 'gemini-api'
   geminiApiKey: '',
   excludedDomains: [
