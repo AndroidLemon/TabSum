@@ -5,9 +5,12 @@
  */
 
 import {
-  saveArchivedTab,
-  updateArchivedTabStatus,
-  markTabClosed,
+  recordCapture,
+  markClosedByTabSum,
+  markTabGone,
+  markReopened,
+  markLeftOpen,
+  markStaysSuspended,
   purgeDeletedTabs,
   fadeExpiredTabs,
   getTabById,
@@ -87,7 +90,7 @@ async function reconcileDiscardedRecords() {
     if (mapped.has(record.id)) continue;
     const tab = tabs.find(t => t.url === record.url);
     if (tab) await mapDiscardedRecord(tab.id, record.id);
-    else await updateArchivedTabStatus(record.id, 'archived');
+    else await markTabGone(record.id);
   }
 }
 
@@ -217,7 +220,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
   await setTimestamp(activeInfo.tabId, Date.now());
   const recordId = await takeDiscardedRecord(activeInfo.tabId);
   if (recordId) {
-    await updateArchivedTabStatus(recordId, 'restored').catch(console.error);
+    await markReopened(recordId).catch(console.error);
   }
 });
 
@@ -264,7 +267,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   await removeTimestamp(tabId);
   const recordId = await takeDiscardedRecord(tabId);
   if (recordId) {
-    await updateArchivedTabStatus(recordId, 'archived').catch(console.error);
+    await markTabGone(recordId).catch(console.error);
   }
 });
 
@@ -365,14 +368,14 @@ function notifyTabsClosed() {
  * Chrome refused a close/discard after the record was committed. If the tab is still
  * there, record why in `status`/`reason` and retry after another full timeout.
  */
-async function revertIfStillOpen(tabId, recordId, status, reason) {
+async function revertIfStillOpen(tabId, recordId, stillSuspended, reason) {
   try {
     await chrome.tabs.get(tabId);
   } catch {
     return; // tab is gone after all; the committed record stands
   }
   console.warn(`[TabSum] ${reason} (tab ${tabId}).`);
-  await updateArchivedTabStatus(recordId, status, reason);
+  await (stillSuspended ? markStaysSuspended(recordId, reason) : markLeftOpen(recordId, reason));
   await setTimestamp(tabId, Date.now());
 }
 
@@ -401,10 +404,10 @@ async function closeDiscardedTab(tab, recordId, settings) {
     if (await userReopened(tab.id)) return;
     const removed = await chrome.tabs.remove(tab.id).then(() => true, () => false);
     if (!removed) {
-      await revertIfStillOpen(tab.id, recordId, 'discarded', 'Chrome refused to close this tab; it stays suspended');
+      await revertIfStillOpen(tab.id, recordId, true, 'Chrome refused to close this tab; it stays suspended');
       return;
     }
-    await markTabClosed(recordId);
+    await markClosedByTabSum(recordId);
     console.log(`[TabSum] Closed long-discarded tab ${tab.id} (${tab.url}).`);
     notifyTabsClosed();
     await updateBadge();
@@ -462,7 +465,7 @@ async function processTabArchival(tab, settings, lastActiveTime) {
 
     // 6. Commit the final status BEFORE the destructive call, so a worker dying in
     //    between can't lose the archive.
-    const record = await saveArchivedTab({
+    const record = await recordCapture({
       url: extracted.url || tab.url,
       title: extracted.title || tab.title,
       domain: extracted.domain || extractDomain(tab.url),
@@ -474,21 +477,19 @@ async function processTabArchival(tab, settings, lastActiveTime) {
       summarySource: summary.source,
       cleanText: extracted.cleanText || '',
       wordCount: extracted.wordCount || 0,
-      status: shouldClose ? 'archived' : 'discarded',
-      closedAt: shouldClose ? Date.now() : null,
       closureTier: safety.tier,
       closureReason,
       meta: { ...extracted.meta, heuristicTags: summary.heuristicTags }
-    });
+    }, shouldClose ? 'closed' : 'suspended');
 
     if (shouldClose) {
       if (await userReopened(tab.id)) {
-        await revertIfStillOpen(tab.id, record.id, 'captured', 'You switched to this tab while it was being archived; summary saved, tab left open');
+        await revertIfStillOpen(tab.id, record.id, false, 'You switched to this tab while it was being archived; summary saved, tab left open');
         return;
       }
       const removed = await chrome.tabs.remove(tab.id).then(() => true, () => false);
       if (!removed) {
-        await revertIfStillOpen(tab.id, record.id, 'captured', 'Chrome refused to close this tab; summary saved, tab left open');
+        await revertIfStillOpen(tab.id, record.id, false, 'Chrome refused to close this tab; summary saved, tab left open');
         return;
       }
       await removeTimestamp(tab.id);
@@ -518,13 +519,13 @@ async function processTabArchival(tab, settings, lastActiveTime) {
             func: () => { document.title = document.title.replace(/^💤 /, ''); }
           }).catch(() => {});
         }
-        await revertIfStillOpen(tab.id, record.id, 'captured', 'Chrome refused to suspend this tab; summary saved, tab left open');
+        await revertIfStillOpen(tab.id, record.id, false, 'Chrome refused to suspend this tab; summary saved, tab left open');
         return;
       }
       await mapDiscardedRecord(discardedTab.id, record.id);
       // Activated while the mapping was being written? onActivated found nothing to restore.
       if (await userReopened(discardedTab.id) && await takeDiscardedRecord(discardedTab.id)) {
-        await updateArchivedTabStatus(record.id, 'restored');
+        await markReopened(record.id);
       }
     }
 
@@ -564,7 +565,7 @@ async function archiveActiveTab(activeTab) {
   }
 
   const summary = await summarizeContent(extracted, settings);
-  const record = await saveArchivedTab({
+  const record = await recordCapture({
     url: extracted.url || activeTab.url,
     title: extracted.title || activeTab.title,
     domain: extracted.domain || extractDomain(activeTab.url),
@@ -576,11 +577,10 @@ async function archiveActiveTab(activeTab) {
     summarySource: summary.source,
     cleanText: extracted.cleanText || '',
     wordCount: extracted.wordCount || 0,
-    status: 'captured', // saved; the tab stays open
     closureTier: classifyClosureSafety({ ...extracted.closureTelemetry, wordCount: extracted.wordCount }).tier,
     closureReason: 'Saved manually; tab left open',
     meta: { ...extracted.meta, heuristicTags: summary.heuristicTags }
-  });
+  }, 'left-open'); // saved; the tab stays open
 
   await updateBadge();
   return { success: true, record };
@@ -661,7 +661,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               await chrome.windows.update(existingTab.windowId, { focused: true });
             }
             if (message.recordId) {
-              await updateArchivedTabStatus(message.recordId, 'restored');
+              await markReopened(message.recordId);
             }
             sendResponse({ success: true, restoredInPlace: true, tabId: existingTab.id });
             return;
@@ -670,7 +670,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           // 2. Tab was closed, open fresh tab
           const newTab = await chrome.tabs.create({ url: message.url, active: true });
           if (message.recordId) {
-            await updateArchivedTabStatus(message.recordId, 'restored');
+            await markReopened(message.recordId);
           }
           sendResponse({ success: true, restoredInPlace: false, tabId: newTab.id });
           return;

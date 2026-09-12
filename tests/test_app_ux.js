@@ -328,12 +328,12 @@ async function runAppUXTests() {
     console.log('--- Test 10: "Closed today" refreshes live on TABS_CLOSED ---');
     assert.strictEqual(await page.locator('#closed-today').isHidden(), true, 'Closed today hidden when nothing was closed');
     await page.evaluate(async () => {
-      const { saveArchivedTab, markTabClosed } = await import('/src/storage/db.js');
+      const { saveArchivedTab, markClosedByTabSum } = await import('/src/storage/db.js');
       await saveArchivedTab({
         id: 'closed-note', url: 'https://closed.example/article', title: 'Closed In Background', domain: 'closed.example',
         status: 'archived', summary: { tldr: 'Closed by the sweep', bullets: [], tags: [] }
       });
-      await markTabClosed('closed-note');
+      await markClosedByTabSum('closed-note');
     });
     await background.evaluate(() => chrome.runtime.sendMessage({ type: 'TABS_CLOSED' }).catch(() => {}));
     await page.waitForSelector('#closed-today:not([hidden])', { timeout: 5000 });
@@ -377,7 +377,7 @@ async function runAppUXTests() {
     const hub = await context.newPage();
     await hub.goto(APP_URL);
     await hub.evaluate(async () => {
-      const { saveArchivedTab, updateArchivedTabStatus } = await import('/src/storage/db.js');
+      const { saveArchivedTab, markReopened } = await import('/src/storage/db.js');
       const DAY = 24 * 60 * 60 * 1000;
       const note = (id, capturedAt) => saveArchivedTab({
         id, url: `https://notes.example/${id}`, title: id, capturedAt, status: 'archived',
@@ -386,7 +386,7 @@ async function runAppUXTests() {
       await note('inbox-note', Date.now() - DAY);
       await note('fading-note', Date.now() - 29 * DAY); // 30-day window -> fades in ~1 day
       await note('reopened-note', Date.now() - 2 * DAY);
-      await updateArchivedTabStatus('reopened-note', 'restored');
+      await markReopened('reopened-note');
     });
     await hub.reload();
     await hub.waitForSelector('.tab-card[data-id="inbox-note"]', { timeout: 5000 });

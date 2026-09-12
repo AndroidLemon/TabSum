@@ -6,6 +6,7 @@
 
 import assert from 'node:assert';
 import 'fake-indexeddb/auto';
+import { getExpiry, fadeChipLabel, FADE_WARNING_DAYS } from '../src/shared/fade.js';
 
 console.log('--- Running TabSum Storage Unit Tests ---');
 
@@ -38,9 +39,11 @@ const {
   restoreDeletedTab,
   purgeDeletedTabs,
   deleteArchivedTab,
-  markTabClosed,
-  updateArchivedTabStatus,
-  getExpiry,
+  markClosedByTabSum,
+  markTabGone,
+  markReopened,
+  markLeftOpen,
+  recordCapture,
   fadeExpiredTabs
 } = await import('../src/storage/db.js');
 
@@ -173,23 +176,23 @@ assert.deepStrictEqual((await getArchivedTabs({ timeRange: 'yesterday' })).map(t
 console.log('✓ Calendar-day stats verified');
 
 // Test 11: closedAt feeds "Closed today"; reopening clears it
-console.log('Testing markTabClosed / closedSince...');
+console.log('Testing record lifecycle / closedSince...');
 await clearAllHistory();
 await saveArchivedTab({ id: 'c-closed', url: 'https://c.example/closed', status: 'discarded' });
 await saveArchivedTab({ id: 'c-manual', url: 'https://c.example/manual', status: 'archived' });
-const closedRec = await markTabClosed('c-closed');
+const closedRec = await markClosedByTabSum('c-closed');
 assert.strictEqual(closedRec.status, 'archived');
-assert.ok(closedRec.closedAt > 0, 'markTabClosed stamps closedAt');
+assert.ok(closedRec.closedAt > 0, 'markClosedByTabSum stamps closedAt');
 assert.deepStrictEqual((await getArchivedTabs({ closedSince: midnight.getTime() })).map(t => t.id), ['c-closed'],
   'closedSince returns only tabs TabSum closed');
-await updateArchivedTabStatus('c-closed', 'restored');
+await markReopened('c-closed');
 assert.strictEqual((await getTabById('c-closed')).closedAt, null, 'Reopening clears closedAt');
 assert.strictEqual((await getArchivedTabs({ closedSince: midnight.getTime() })).length, 0);
 console.log('✓ Closed-today bookkeeping verified');
 
 // Test 11b: 'captured' = summary saved, tab still open (Chrome refused to close, or manual save)
-await markTabClosed('c-manual');
-const kept = await updateArchivedTabStatus('c-manual', 'captured', 'Chrome refused to close this tab; summary saved, tab left open');
+await markClosedByTabSum('c-manual');
+const kept = await markLeftOpen('c-manual', 'Chrome refused to close this tab; summary saved, tab left open');
 assert.strictEqual(kept.closureReason, 'Chrome refused to close this tab; summary saved, tab left open', 'Reason is recorded');
 assert.strictEqual(kept.closedAt, null, 'A tab Chrome kept open is not in Closed today');
 assert.strictEqual(kept.restoredAt, undefined, 'Not counted as reopened, so it stays in the inbox');
@@ -197,6 +200,31 @@ assert.ok((await getArchivedTabs({ view: 'inbox' })).some(t => t.id === 'c-manua
 console.log('✓ Captured status verified');
 
 // Test 12: Inbox views, fading, expiring-soon sort
+// Lifecycle: a tab TabSum closed vs a tab that merely went away, and capture dispositions
+console.log('Testing lifecycle transitions...');
+await clearAllHistory();
+await saveArchivedTab({ id: 'lc-gone', url: 'https://lc.example/gone', status: 'discarded' });
+const gone = await markTabGone('lc-gone');
+assert.strictEqual(gone.status, 'archived', 'markTabGone archives the record');
+assert.ok(!gone.closedAt, 'a tab TabSum did not close must not count as closed today');
+assert.strictEqual((await getArchivedTabs({ closedSince: 1 })).length, 0, 'and it stays out of Closed today (0 means the filter is off)');
+
+const cap = { url: 'https://lc.example/cap', title: 'Cap' };
+const asClosed = await recordCapture({ ...cap, url: 'https://lc.example/c1' }, 'closed');
+assert.strictEqual(asClosed.status, 'archived');
+assert.ok(asClosed.closedAt > 0, "disposition 'closed' pairs archived with closedAt");
+const asSuspended = await recordCapture({ ...cap, url: 'https://lc.example/c2' }, 'suspended');
+assert.strictEqual(asSuspended.status, 'discarded');
+assert.strictEqual(asSuspended.closedAt, null, "disposition 'suspended' leaves closedAt null");
+const asOpen = await recordCapture({ ...cap, url: 'https://lc.example/c3' }, 'left-open');
+assert.strictEqual(asOpen.status, 'captured');
+assert.strictEqual(asOpen.closedAt, null, "disposition 'left-open' leaves closedAt null");
+
+const reopened = await markReopened(asClosed.id);
+assert.strictEqual(reopened.closedAt, null, 'reopening clears closedAt');
+assert.ok(reopened.restoredAt > 0, 'reopening stamps restoredAt');
+console.log('✓ Lifecycle transitions verified');
+
 console.log('Testing inbox views and fading...');
 await clearAllHistory();
 const DAY = 24 * 60 * 60 * 1000;
@@ -207,13 +235,13 @@ await saveArchivedTab({ id: 'f-old', url: 'https://f.example/old', status: 'arch
 await saveArchivedTab({ id: 'f-new', url: 'https://f.example/new', status: 'archived', capturedAt: nowMs - DAY });
 await saveArchivedTab({ id: 'f-star', url: 'https://f.example/star', status: 'archived', capturedAt: nowMs - 90 * DAY, isFavorite: true });
 await saveArchivedTab({ id: 'f-reopened', url: 'https://f.example/reopened', status: 'archived', capturedAt: nowMs - 2 * DAY });
-await updateArchivedTabStatus('f-reopened', 'restored');
+await markReopened('f-reopened');
 
 assert.deepStrictEqual((await getArchivedTabs({ view: 'reopened' })).map(t => t.id), ['f-reopened']);
 assert.ok(!(await getArchivedTabs({ view: 'inbox' })).some(t => t.id === 'f-reopened'), 'Reopened notes leave the inbox');
 assert.strictEqual(getExpiry(await getTabById('f-star'), fade), null, 'Starred notes never fade');
 assert.strictEqual(getExpiry(await getTabById('f-new'), { ...fade, fadeUnopenedDays: 0 }), null, '0 days = never');
-assert.deepStrictEqual((await getArchivedTabs({ sortBy: 'expiring-soon' })).map(t => t.id),
+assert.deepStrictEqual((await getArchivedTabs({ sortBy: 'expiring-soon', fadeSettings: fade })).map(t => t.id),
   ['f-old', 'f-reopened', 'f-new', 'f-star'], 'Soonest to fade first, never-fading last');
 assert.strictEqual((await fadeExpiredTabs(fade)).fadedCount, 1);
 assert.ok(typeof (await getTabById('f-old')).deletedAt === 'number', 'Fading tombstones, never hard-deletes');
@@ -230,6 +258,21 @@ assert.ok(!(await getTabById('f-kept')).deletedAt, 'Records of still-suspended t
 assert.ok((await getTabById('f-orphan')).deletedAt, 'Untracked discarded records fade');
 await purgeDeletedTabs(0);
 assert.strictEqual(await getTabById('f-orphan'), null, 'The hourly purge finishes what the fade started');
+
+// The warning window: a note is silent until it is FADE_WARNING_DAYS from going, unless the
+// user is sorting by fade date, where the point is seeing every one of them.
+const chipNow = 1_700_000_000_000;
+const chipNote = { capturedAt: chipNow, isFavorite: false };
+const chipAt = (daysLeft, sortBy) =>
+  fadeChipLabel({ ...chipNote, capturedAt: chipNow - (30 - daysLeft) * DAY }, { ...fade }, sortBy, chipNow);
+assert.strictEqual(chipAt(FADE_WARNING_DAYS + 1), '', 'outside the warning window a fading note is silent');
+assert.strictEqual(chipAt(FADE_WARNING_DAYS), 'Fades in 3d', 'at the window edge the chip appears');
+assert.strictEqual(chipAt(0.5), 'Fades today', 'under a day it says today');
+assert.strictEqual(chipAt(FADE_WARNING_DAYS + 1, 'expiring-soon'), 'Fades in 4d',
+  'the expiring-soon sort shows every fading note regardless of the window');
+assert.strictEqual(fadeChipLabel({ ...chipNote, isFavorite: true }, fade, 'newest', chipNow), '',
+  'starred notes never show a chip');
+assert.strictEqual(fadeChipLabel(chipNote, null, 'newest', chipNow), '', 'no settings means no chip');
 console.log('✓ Inbox views, fading and expiring-soon sort verified');
 
 // Test 13: JSON import - unknown ids dedupe on URL; field types are coerced

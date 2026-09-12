@@ -2,21 +2,12 @@
  * TabSum - Shared HTML helpers for extension pages (side panel, wiki, options).
  */
 
-import { getExpiry } from '../storage/db.js';
+import { fadeChipLabel } from './fade.js';
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-/**
- * "Fades in Nd" chip for notes within 3 days of fading (every fading note when
- * sorted by expiring-soon). Empty for starred / never-fading notes.
- */
+/** "Fades in Nd" chip, or nothing when this note should not show one. */
 export function fadeChipHtml(tab, settings, sortBy) {
-  const expiry = settings ? getExpiry(tab, settings) : null;
-  if (expiry === null) return '';
-  const daysLeft = (expiry - Date.now()) / DAY_MS;
-  if (sortBy !== 'expiring-soon' && daysLeft > 3) return '';
-  const label = daysLeft < 1 ? 'Fades today' : `Fades in ${Math.ceil(daysLeft)}d`;
-  return `<span class="fade-chip">${label}</span>`;
+  const label = fadeChipLabel(tab, settings, sortBy);
+  return label ? `<span class="fade-chip">${label}</span>` : '';
 }
 
 // String-based on purpose: the textContent->innerHTML trick does not escape quotes,
