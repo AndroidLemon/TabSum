@@ -14,6 +14,8 @@ import {
   canCloseWith,
   isScriptableUrl,
   originPatternFor,
+  mergeFrameExtractions,
+  MIN_COUNTABLE_FRAME_AREA,
   AI_SUMMARY_SOURCES
 } from '../src/shared/closure-policy.js';
 
@@ -138,5 +140,60 @@ console.log('✓ Archive modes and the AI-summary gate verified');
 assert.ok(isScriptableUrl('https://example.com'), 'https is scriptable');
 assert.ok(!isScriptableUrl(''), 'an empty url is not scriptable');
 assert.ok(!isScriptableUrl(null), 'a missing url is not scriptable');
+
+// --- Frame merging: the zero-loss guard must see into iframes ---
+console.log('Testing frame merge...');
+
+const BIG = MIN_COUNTABLE_FRAME_AREA;
+const frame = (frameId, over = {}) => ({
+  frameId,
+  result: {
+    success: true, isDirty: false, reason: '', url: `https://x/${frameId}`, title: `t${frameId}`,
+    wordCount: 500, frameArea: BIG,
+    closureTelemetry: { inputCounts: { textareas: 0, selects: 0, passwords: 0, appContainers: 0, otherInputs: 0 }, urlParts: { pathname: '/', hash: '', search: '' } },
+    ...over
+  }
+});
+
+assert.strictEqual(mergeFrameExtractions([]), null, 'no frames means no extraction');
+assert.strictEqual(mergeFrameExtractions([{ frameId: 0, result: undefined }]), null, 'a frame that threw is not an extraction');
+assert.strictEqual(mergeFrameExtractions([{ frameId: 0, result: { success: false } }]), null, 'an unsuccessful frame is not an extraction');
+
+// This is the bug the step exists to fix: the editor is in the subframe.
+const tinymce = mergeFrameExtractions([
+  frame(0, { title: 'An Editor' }),
+  frame(7, { isDirty: true, reason: 'Unsaved rich-text editor draft detected', title: 'about:blank' })
+]);
+assert.strictEqual(tinymce.isDirty, true, 'a dirty subframe makes the whole tab dirty');
+assert.match(tinymce.reason, /rich-text/, 'and carries that frame\'s reason');
+assert.strictEqual(tinymce.title, 'An Editor', 'while identity still comes from the top frame');
+
+assert.strictEqual(mergeFrameExtractions([frame(0), frame(7)]).isDirty, false, 'all-clean frames stay clean');
+
+// Identity never comes from a subframe, even when the top frame is listed second.
+const reordered = mergeFrameExtractions([frame(9, { title: 'ad', url: 'https://ads/x' }), frame(0, { title: 'real' })]);
+assert.strictEqual(reordered.title, 'real', 'the top frame wins regardless of result order');
+assert.strictEqual(mergeFrameExtractions([frame(4, { title: 'only' })]).title, 'only', 'with no top frame, the first usable one stands in');
+
+// Controls are summed so a framed form still counts...
+const counted = mergeFrameExtractions([
+  frame(0, { closureTelemetry: { inputCounts: { textareas: 1, selects: 0, passwords: 0, appContainers: 0, otherInputs: 2 }, urlParts: { pathname: '/', hash: '', search: '' } } }),
+  frame(7, { closureTelemetry: { inputCounts: { textareas: 0, selects: 2, passwords: 1, appContainers: 0, otherInputs: 3 }, urlParts: {} } })
+]);
+assert.deepStrictEqual(counted.closureTelemetry.inputCounts,
+  { textareas: 1, selects: 2, passwords: 1, appContainers: 0, otherInputs: 5 }, 'control counts sum across frames');
+
+// ...but a tracking pixel cannot suspend every page that embeds one.
+const pixel = mergeFrameExtractions([
+  frame(0),
+  frame(7, { frameArea: 1, closureTelemetry: { inputCounts: { textareas: 9, selects: 9, passwords: 9, appContainers: 9, otherInputs: 9 }, urlParts: {} } })
+]);
+assert.deepStrictEqual(pixel.closureTelemetry.inputCounts,
+  { textareas: 0, selects: 0, passwords: 0, appContainers: 0, otherInputs: 0 }, 'a sub-threshold frame contributes no controls');
+assert.strictEqual(
+  mergeFrameExtractions([frame(0), frame(7, { frameArea: 1, isDirty: true, reason: 'Unsaved form input detected' })]).isDirty,
+  true, 'but a tiny frame can still veto on dirtiness — size never gates safety');
+
+console.log('✓ Frame merge and iframe dirty propagation verified');
 
 console.log('--- Closure Policy Tests Passed Successfully! ---');

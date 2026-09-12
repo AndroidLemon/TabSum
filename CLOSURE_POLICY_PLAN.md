@@ -87,7 +87,18 @@ letting them inflate counts or overwrite metadata.
 **Verify:** `npm run test:hardening`; add a fixture page with a same-origin
 iframe containing a dirty textarea and assert `isDirty === true`.
 
-- [ ] Done — tinymce isDirty now ____
+- [x] Done — framed draft now detected: top-frame-only injection reports
+      `isDirty=false`, merged reports `true` ("Unsaved textarea content detected").
+      Asserted both halves in `tests/test_tab_hardening.js` so the bug can't
+      silently return. Close recall **45.7% -> 42.9%**, leaks still **0**.
+      The recall drop is the honest price: subframe controls now count, so the
+      policy got more conservative. Steps 3-7 are what buy it back.
+      Two things the plan did not anticipate:
+      - Service workers forbid dynamic `import()`, so the browser test hands the
+        raw per-frame results back to Node and merges there. Better anyway — the
+        merge is pure and now gets tested against real browser frame data.
+      - `tests/telemetry_ratio.js` had to learn frames too (`page.frames()` +
+        merge), or the harness would stop measuring what actually ships.
 
 ---
 

@@ -137,6 +137,7 @@
 
   // 3. Clean Content Extraction (Readability heuristic)
   function extractCleanText() {
+    if (!document.body) return '';
     // Clone body so we don't modify the real page
     const clone = document.body.cloneNode(true);
 
@@ -210,6 +211,7 @@
     isLowConfidence,
     closureTelemetry,
     url: window.location.href,
+    frameArea: (window.innerWidth || 0) * (window.innerHeight || 0),
     title: cleanTitle,
     domain: window.location.hostname.replace(/^www\./, ''),
     favIconUrl,

@@ -152,3 +152,47 @@ export function decideClosure({ closureTier, summarySource, settings = {} } = {}
   }
   return { action: close ? 'close' : 'suspend', reason: '' };
 }
+
+/**
+ * Collapse one chrome.scripting.executeScript({ allFrames: true }) result set
+ * into a single extraction.
+ *
+ * The top frame owns the tab's identity — url, title, metadata, prose, word
+ * count. Subframes contribute two things only: unsaved work, and controls.
+ *
+ * Dirtiness is a veto and is OR-ed across EVERY frame regardless of size. An
+ * iframe-hosted editor (TinyMCE, CKEditor, the WordPress classic editor) holds
+ * the user's draft in a frame the top document cannot see, and missing it is
+ * the data-loss case this merge exists to close.
+ *
+ * ponytail: control counts skip frames under MIN_COUNTABLE_FRAME_AREA so a 1x1
+ * tracking pixel carrying a hidden form can't suspend every page that embeds
+ * one. Upgrade path if ad frames still distort counts: have the extractor
+ * report whether its frame is same-origin and weight cross-origin frames out.
+ */
+export const MIN_COUNTABLE_FRAME_AREA = 100 * 100;
+
+export function mergeFrameExtractions(frameResults = []) {
+  const frames = (frameResults || [])
+    .map((entry) => ({ frameId: entry?.frameId ?? 0, result: entry?.result }))
+    .filter((frame) => frame.result && frame.result.success);
+  if (!frames.length) return null;
+
+  const top = frames.find((frame) => frame.frameId === 0) || frames[0];
+  const merged = { ...top.result };
+
+  const dirty = frames.find((frame) => frame.result.isDirty);
+  merged.isDirty = Boolean(dirty);
+  merged.reason = dirty ? dirty.result.reason : '';
+
+  const counts = { textareas: 0, selects: 0, passwords: 0, appContainers: 0, otherInputs: 0 };
+  for (const frame of frames) {
+    const isTop = frame === top;
+    if (!isTop && (frame.result.frameArea || 0) < MIN_COUNTABLE_FRAME_AREA) continue;
+    const frameCounts = frame.result.closureTelemetry?.inputCounts || {};
+    for (const key of Object.keys(counts)) counts[key] += frameCounts[key] || 0;
+  }
+  merged.closureTelemetry = { ...top.result.closureTelemetry, inputCounts: counts };
+
+  return merged;
+}

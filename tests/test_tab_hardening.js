@@ -10,6 +10,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import assert from 'node:assert';
 import { chromium } from '@playwright/test';
+import { mergeFrameExtractions } from '../src/shared/closure-policy.js';
 
 const PORT = 8891;
 import { buildTestExtension, extensionLaunchOptions } from './helpers/test-extension.js';
@@ -88,6 +89,35 @@ function createMockServer() {
           <div role="textbox" aria-multiline="true">
             Fixing the memory leak in the transaction manager component.
           </div>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    // The iframe-hosted editor case: the draft lives in a frame the top
+    // document cannot reach, so a top-frame-only injection reports isDirty=false.
+    if (req.url === '/framed-editor') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>CMS Compose</title></head>
+        <body>
+          <h1>Edit Post</h1>
+          <iframe src="/framed-editor-inner" width="600" height="400"></iframe>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    if (req.url === '/framed-editor-inner') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <body>
+          <textarea id="draft"></textarea>
+          <script>document.getElementById('draft').value = 'Half-written post the user has not saved yet.';</script>
         </body>
         </html>
       `);
@@ -183,6 +213,39 @@ async function runHardeningTests() {
     assert.strictEqual(richCheck.isDirty, true, 'ProseMirror rich editor draft must trigger isDirty');
     console.log(`✓ Rich editor detected: reason = "${richCheck.reason}"`);
     await richPage.close();
+
+    // 4a-2. Editor inside an iframe — requires allFrames injection + frame merge
+    const framedPage = await context.newPage();
+    await framedPage.goto(`http://localhost:${PORT}/framed-editor`);
+    await framedPage.waitForLoadState('domcontentloaded');
+    await framedPage.waitForTimeout(500);
+
+    // The worker can't dynamic-import (banned on ServiceWorkerGlobalScope), so it
+    // hands back the raw per-frame results and the pure merge runs here in Node.
+    const framedCheck = await background.evaluate(async () => {
+      const tabs = await chrome.tabs.query({});
+      const target = tabs.find(t => t.url.includes('/framed-editor'));
+      const topOnly = await chrome.scripting.executeScript({
+        target: { tabId: target.id },
+        files: ['src/content/in-tab-extractor.js']
+      });
+      const allFrames = await chrome.scripting.executeScript({
+        target: { tabId: target.id, allFrames: true },
+        files: ['src/content/in-tab-extractor.js']
+      });
+      return { topOnlyDirty: topOnly?.[0]?.result?.isDirty, allFrames };
+    });
+
+    const framedMerged = mergeFrameExtractions(framedCheck.allFrames);
+    assert.ok(framedCheck.allFrames.length >= 2, 'allFrames must reach the subframe');
+    assert.strictEqual(framedCheck.topOnlyDirty, false,
+      'top-frame-only injection is blind to the framed draft (this is the bug)');
+    assert.strictEqual(framedMerged.isDirty, true,
+      'merged extraction must see the unsaved draft inside the iframe');
+    assert.strictEqual(framedMerged.title, 'CMS Compose',
+      'and identity must still come from the top frame');
+    console.log(`✓ Framed editor detected across ${framedCheck.allFrames.length} frames: reason = "${framedMerged.reason}"`);
+    await framedPage.close();
 
     // 4b. Shadow DOM Form Input
     const shadowPage = await context.newPage();

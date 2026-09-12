@@ -22,7 +22,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
-import { classifyClosureSafety } from '../src/shared/closure-policy.js';
+import { classifyClosureSafety, mergeFrameExtractions } from '../src/shared/closure-policy.js';
 
 const args = process.argv.slice(2);
 const argOf = (flag, fallback) => {
@@ -68,15 +68,29 @@ async function measure(context, { url, expect }) {
     if (status >= 400) return { url, expect, error: `HTTP ${status}` };
     await page.waitForTimeout(SETTLE_MS);
 
+    // Run the extractor in every frame and merge, mirroring the shipped
+    // executeScript({ allFrames: true }) path. Measuring only the top frame
+    // would miss iframe-hosted editors the real extension now sees.
+    const runAllFrames = async () => {
+      const frames = page.frames();
+      const out = [];
+      for (const [i, f] of frames.entries()) {
+        try {
+          out.push({ frameId: f === page.mainFrame() ? 0 : i, result: await f.evaluate((code) => eval(code), EXTRACTOR) });
+        } catch { /* cross-origin or detached frame: the extension can inject there, Playwright can't */ }
+      }
+      return out;
+    };
+
     // Some sites navigate again after DCL (consent hops, auth bounces), which
     // destroys the execution context mid-eval. One retry after settling covers it.
     let extracted;
     try {
-      extracted = await page.evaluate((code) => eval(code), EXTRACTOR);
+      extracted = mergeFrameExtractions(await runAllFrames());
     } catch (err) {
       if (!/Execution context was destroyed/.test(String(err.message || err))) throw err;
       await page.waitForTimeout(SETTLE_MS);
-      extracted = await page.evaluate((code) => eval(code), EXTRACTOR);
+      extracted = mergeFrameExtractions(await runAllFrames());
     }
     if (!extracted?.success) return { url, expect, error: 'extractor returned no result' };
 
