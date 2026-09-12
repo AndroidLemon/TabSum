@@ -143,6 +143,58 @@ function createMockServer() {
       return;
     }
 
+    // Controls the user cannot see: a display:none draft box and the off-screen
+    // capture textarea every virtualized editor and clipboard shim parks in the DOM.
+    if (req.url === '/hidden-controls') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Long Read</title></head>
+        <body>
+          <main><h1>Essay</h1><p>${'Prose that the reader came here to read. '.repeat(50)}</p></main>
+          <textarea style="display:none"></textarea>
+          <textarea style="position:absolute;left:-9999px;top:-9999px"></textarea>
+          <select style="visibility:hidden"><option>a</option></select>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    // A virtualized editor: no semantic signal at all, only a vendor class.
+    if (req.url === '/vendor-editor') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>JSON Tool</title></head>
+        <body>
+          <h1>Formatter</h1>
+          <p>${'Paste your document below to reformat it. '.repeat(40)}</p>
+          <div class="ace_editor" style="width:600px;height:300px">editor surface</div>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    // A select that IS data entry: it sits in a form with a submit button.
+    if (req.url === '/submit-form-select') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Order Options</title></head>
+        <body>
+          <p>${'Choose your configuration before continuing. '.repeat(40)}</p>
+          <form>
+            <select name="size"><option>S</option><option>M</option></select>
+            <button type="submit">Continue</button>
+          </form>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
     res.end('<h1>404 Not Found</h1>');
   });
 
@@ -291,6 +343,45 @@ async function runHardeningTests() {
       'safe_to_close', 'so the article underneath them stays closeable');
     console.log(`✓ Orphan picker ignored: article with ${orphanCheck.wordCount} words stays closeable`);
     await orphanPage.close();
+
+    // 4a-4. Table-driven coverage for the telemetry rules added in Steps 3-6.
+    const telemetryCases = [
+      { route: '/hidden-controls', tier: 'safe_to_close',
+        expect: { textareas: 0, selects: 0 },
+        why: 'controls the user cannot see are not controls the user is using' },
+      { route: '/vendor-editor', tier: 'suspend_only',
+        expect: { appContainers: 1 },
+        why: 'a virtualized editor is visible only through its vendor class' },
+      { route: '/submit-form-select', tier: 'suspend_only',
+        expect: { selects: 1 },
+        why: 'a select inside a submittable form is real data entry' }
+    ];
+
+    for (const testCase of telemetryCases) {
+      const casePage = await context.newPage();
+      await casePage.goto(`http://localhost:${PORT}${testCase.route}`);
+      await casePage.waitForLoadState('domcontentloaded');
+
+      const caseResult = await background.evaluate(async (route) => {
+        const tabs = await chrome.tabs.query({});
+        const target = tabs.find(t => t.url.includes(route));
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: target.id, allFrames: true },
+          files: ['src/content/in-tab-extractor.js']
+        });
+        return results?.[0]?.result;
+      }, testCase.route);
+
+      for (const [key, want] of Object.entries(testCase.expect)) {
+        assert.strictEqual(caseResult.closureTelemetry.inputCounts[key], want,
+          `${testCase.route}: ${key} should be ${want} — ${testCase.why}`);
+      }
+      assert.strictEqual(
+        classifyClosureSafety({ ...caseResult.closureTelemetry, wordCount: caseResult.wordCount }).tier,
+        testCase.tier, `${testCase.route} must classify ${testCase.tier}`);
+      console.log(`✓ ${testCase.route} -> ${testCase.tier} (${testCase.why})`);
+      await casePage.close();
+    }
 
     // 4b. Shadow DOM Form Input
     const shadowPage = await context.newPage();

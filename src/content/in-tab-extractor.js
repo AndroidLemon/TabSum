@@ -28,11 +28,25 @@
   // clipboard shims hide a textarea per code block. The layout engine already knows
   // which is which, so ask it instead of guessing from value length.
   function isVisibleControl(el) {
+    let rendered;
     try {
-      return el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+      rendered = el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
     } catch {
-      return el.offsetParent !== null; // checkVisibility landed in Chrome 105
+      rendered = el.offsetParent !== null; // checkVisibility landed in Chrome 105
     }
+    if (!rendered) return false;
+
+    // checkVisibility reports display/visibility/opacity/content-visibility, but
+    // an element parked at left:-9999px is "visible" to it. Off-screen parking is
+    // the standard clipboard-shim and virtualized-editor trick, so test the box
+    // too. Only fully past the top or left origin counts — content below the fold
+    // is off-viewport but genuinely on the page.
+    try {
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) return false;
+      if (rect.right <= 0 || rect.bottom <= 0) return false;
+    } catch { /* detached node: treat the render check as authoritative */ }
+    return true;
   }
 
   function resolvesToAnchor(rawHash) {

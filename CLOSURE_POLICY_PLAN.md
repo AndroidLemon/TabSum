@@ -299,7 +299,24 @@ yet.
 
 **Verify:** `npm run test:unit && npm run test:policy && npm run test:storage`.
 
-- [ ] Done
+- [x] Done — close recall **85.7% -> 88.6%**, leaks **0**. Reading pages held
+      open: 5 -> 4 of 35. All 8 suites green.
+      **The bridges needed no change at all.** Both new fields (`hasMediaSurface`,
+      `hashResolvesToAnchor`) live *inside* `closureTelemetry`, so the existing
+      `{ ...closureTelemetry, wordCount }` spread at `service-worker.js:464` and
+      `:583` already carries them, and `db.js:140` is untouched. The plan assumed
+      a shape change that putting the fields in the right place avoided.
+      Writing the table-driven cases found a real hole rather than confirming
+      known-good behaviour: **`checkVisibility()` does not detect off-screen
+      parking.** It reports display / visibility / opacity / content-visibility,
+      but an element at `left:-9999px` is visible to it — and off-screen parking
+      is the standard clipboard-shim and virtualized-editor trick, the exact thing
+      Step 3 claimed to have solved. Step 3's win was real but partial: it caught
+      `display:none` shims and missed off-screen ones.
+      `isVisibleControl` now also tests the box, treating a control as hidden when
+      it is fully past the top or left origin (`rect.right <= 0 || rect.bottom <= 0`)
+      or has zero area. Below-the-fold content is deliberately unaffected — it is
+      off-viewport but genuinely on the page. That alone moved recall +2.9 points.
 
 ---
 
