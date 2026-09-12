@@ -2,14 +2,17 @@
  * TabSum - IndexedDB Storage & Local Settings Management
  */
 
+// Storage depends on the closure policy, not the other way round: what counts as an AI
+// summary is a closure rule, and it is enforced here only to stop a JSON import smuggling
+// an unknown source past the AI-only close gate.
+import { AI_SUMMARY_SOURCES } from '../shared/closure-policy.js';
+
 const DB_NAME = 'TabSumDB';
 const DB_VERSION = 2;
 const STORE_NAME = 'archived_tabs';
 const TEXT_STORE = 'tab_text'; // { id, cleanText } kept apart so list/stat queries never deserialize page text
 const MAX_TEXT_CHARS = 50000;
 const DAY_MS = 24 * 60 * 60 * 1000;
-// Summary sources written by an AI tier; anything else counts as 'heuristic'
-export const AI_SUMMARY_SOURCES = new Set(['gemini-api', 'openai-compatible', 'prompt-api']);
 
 let dbPromise = null;
 
@@ -397,24 +400,23 @@ export function getExpiry(record, settings = {}) {
 }
 
 /**
- * Delete notes past their fade date. Skips keepIds (records of tabs TabSum suspended that
+ * Tombstone notes past their fade date. Skips keepIds (records of tabs TabSum suspended that
  * are still open): hybrid mode's second tier needs that record to close the tab.
  */
 export async function fadeExpiredTabs(settings, keepIds = new Set()) {
   const db = await getDB();
   const now = Date.now();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction([STORE_NAME, TEXT_STORE], 'readwrite');
-    const textStore = tx.objectStore(TEXT_STORE);
+    const tx = db.transaction(STORE_NAME, 'readwrite');
     let fadedCount = 0;
     tx.objectStore(STORE_NAME).openCursor().onsuccess = (event) => {
       const cursor = event.target.result;
       if (!cursor) return;
       const expiry = getExpiry(cursor.value, settings);
-      // Tombstones are left to purgeDeletedTabs so Undo keeps working
+      // Tombstone, never hard-delete: purgeDeletedTabs clears it an hour later, so a faded
+      // note is restorable in between. Already-tombstoned records are left to that purge.
       if (expiry !== null && expiry <= now && !keepIds.has(cursor.key) && !cursor.value.deletedAt) {
-        cursor.delete();
-        textStore.delete(cursor.key);
+        cursor.update({ ...cursor.value, deletedAt: now });
         fadedCount++;
       }
       cursor.continue();

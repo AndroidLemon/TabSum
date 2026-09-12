@@ -8,6 +8,7 @@ import http from 'node:http';
 import path from 'node:path';
 import fs from 'node:fs';
 import assert from 'node:assert';
+import { classifyClosureSafety } from '../src/shared/closure-policy.js';
 import { chromium } from '@playwright/test';
 
 const PORT = 8893;
@@ -203,13 +204,18 @@ async function runHybridTests() {
     console.log('\n--- Test 1: DOM Safety Classifier (in-tab-extractor.js) ---');
     const extractorCode = fs.readFileSync(path.resolve('./src/content/in-tab-extractor.js'), 'utf8');
 
+    // The extractor counts controls in a real DOM; the verdict is computed here, in Node,
+    // by the same pure function the service worker uses.
+    const tierOf = (r) => classifyClosureSafety({ ...r.closureTelemetry, wordCount: r.wordCount });
+
     // 1a: Pure reading article -> safe_to_close
     const purePage = await context.newPage();
     await purePage.goto(`http://localhost:${PORT}/pure-article`);
     const pureResult = await purePage.evaluate((code) => eval(code), extractorCode);
     assert.strictEqual(pureResult.isDirty, false, 'Pure article must not be dirty');
-    assert.strictEqual(pureResult.closureTier, 'safe_to_close', 'Pure article must be classified safe_to_close');
-    console.log(`✓ Pure reading article classified as: ${pureResult.closureTier} (${pureResult.closureReason})`);
+    const pureTier = tierOf(pureResult);
+    assert.strictEqual(pureTier.tier, 'safe_to_close', 'Pure article must be classified safe_to_close');
+    console.log(`✓ Pure reading article classified as: ${pureTier.tier} (${pureTier.reason})`);
 
     // 1a': the same article with a date the user picked -> dirty; a JS-ticked checkbox -> still clean
     const pickedResult = await purePage.evaluate((code) => {
@@ -247,30 +253,33 @@ async function runHybridTests() {
     const searchPage = await context.newPage();
     await searchPage.goto(`http://localhost:${PORT}/article-with-search`);
     const searchResult = await searchPage.evaluate((code) => eval(code), extractorCode);
-    assert.strictEqual(searchResult.closureTier, 'safe_to_close', 'Site search must not block closure');
-    console.log(`✓ Article with site search correctly permitted: ${searchResult.closureTier}`);
+    assert.strictEqual(tierOf(searchResult).tier, 'safe_to_close', 'Site search must not block closure');
+    console.log(`✓ Article with site search correctly permitted: ${tierOf(searchResult).tier}`);
 
     // 1c: Page with untouched form -> suspend_only
     const formPage = await context.newPage();
     await formPage.goto(`http://localhost:${PORT}/untouched-form`);
     const formResult = await formPage.evaluate((code) => eval(code), extractorCode);
     assert.strictEqual(formResult.isDirty, false, 'Untouched form must not be marked dirty');
-    assert.strictEqual(formResult.closureTier, 'suspend_only', 'Untouched form must be classified suspend_only');
-    console.log(`✓ Untouched form page classified as: ${formResult.closureTier} (${formResult.closureReason})`);
+    const formTier = tierOf(formResult);
+    assert.strictEqual(formTier.tier, 'suspend_only', 'Untouched form must be classified suspend_only');
+    console.log(`✓ Untouched form page classified as: ${formTier.tier} (${formTier.reason})`);
 
     // 1d: Stateful route (/spa-checkout) -> suspend_only
     const spaPage = await context.newPage();
     await spaPage.goto(`http://localhost:${PORT}/spa-checkout`);
     const spaResult = await spaPage.evaluate((code) => eval(code), extractorCode);
-    assert.strictEqual(spaResult.closureTier, 'suspend_only', 'Checkout route must be classified suspend_only');
-    console.log(`✓ Stateful route (/spa-checkout) classified as: ${spaResult.closureTier} (${spaResult.closureReason})`);
+    const spaTier = tierOf(spaResult);
+    assert.strictEqual(spaTier.tier, 'suspend_only', 'Checkout route must be classified suspend_only');
+    console.log(`✓ Stateful route (/spa-checkout) classified as: ${spaTier.tier} (${spaTier.reason})`);
 
     // 1e: Interactive dialog container -> suspend_only
     const dialogPage = await context.newPage();
     await dialogPage.goto(`http://localhost:${PORT}/dialog-app`);
     const dialogResult = await dialogPage.evaluate((code) => eval(code), extractorCode);
-    assert.strictEqual(dialogResult.closureTier, 'suspend_only', 'Dialog app must be classified suspend_only');
-    console.log(`✓ Dialog app classified as: ${dialogResult.closureTier} (${dialogResult.closureReason})`);
+    const dialogTier = tierOf(dialogResult);
+    assert.strictEqual(dialogTier.tier, 'suspend_only', 'Dialog app must be classified suspend_only');
+    console.log(`✓ Dialog app classified as: ${dialogTier.tier} (${dialogTier.reason})`);
 
     // 1f: Dirty form with typed text -> isDirty: true (untouchable gate)
     const dirtyPage = await context.newPage();

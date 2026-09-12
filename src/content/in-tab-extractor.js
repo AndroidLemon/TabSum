@@ -175,74 +175,40 @@
   // Low-confidence check: if text is under 150 words, preserve as quick bookmark without bad summary
   const isLowConfidence = wordCount < 150;
 
-  // 4. Tiered Hybrid Safety Classifier: Distinguish 'safe_to_close' vs 'suspend_only'
-  function classifyClosureSafety(wordCount) {
-    // ponytail: ceiling - this can't tell a genuine single-field newsletter
-    // signup apart from a one-field login/account form; both read as a lone
-    // "other" input and are allowed to close, since neither has a textarea,
-    // select, password field, rich editor, or 3+ additional text inputs.
+  // 4. Closure telemetry: count the controls and read the URL parts. The counting needs the
+  //    live DOM so it has to happen here; turning it into a closure tier does not, so that
+  //    lives in src/shared/closure-policy.js where a Node test can reach it.
+  function collectClosureTelemetry() {
     const candidateInputs = queryAllDeep('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"])')
       .filter(i => !isSearchInput(i));
     const otherInputs = candidateInputs.filter(i => (i.getAttribute('type') || 'text').toLowerCase() !== 'email');
     const passwordInputs = otherInputs.filter(i => (i.getAttribute('type') || '').toLowerCase() === 'password');
-    const selects = queryAllDeep('select');
-    const textareas = queryAllDeep('textarea');
-    const appContainers = queryAllDeep(
-      '[role="dialog"], [role="application"], [contenteditable="true"], [role="textbox"], .monaco-editor, .ProseMirror, .ql-editor'
-    );
-
-    // Check 1: Real interactive controls (forms, and lone search/email inputs, are exempt)
-    if (textareas.length > 0 || selects.length > 0 || passwordInputs.length > 0 || appContainers.length > 0 || otherInputs.length >= 3) {
-      return {
-        tier: 'suspend_only',
-        reason: 'Contains form or interactive input controls'
-      };
-    }
-
-    // Check 2: Stateful URL path or client-side hash routing
-    const pathname = window.location.pathname.toLowerCase();
-    const hash = window.location.hash.toLowerCase();
-    const search = window.location.search.toLowerCase();
-
-    if (hash.length > 3 || pathname.includes('checkout') || pathname.includes('cart') || pathname.includes('account')) {
-      return {
-        tier: 'suspend_only',
-        reason: 'Stateful URL path or client-side hash route'
-      };
-    }
-
-    // Check 3: Complex multi-param search result listings (preserve user query state)
-    if (search.includes('&') && (search.includes('q=') || search.includes('query=') || search.includes('filter='))) {
-      return {
-        tier: 'suspend_only',
-        reason: 'Complex search/filter query state'
-      };
-    }
-
-    // Check 4: Content density and readability confidence
-    if (wordCount < 120) {
-      return {
-        tier: 'suspend_only',
-        reason: 'Short or low-confidence content'
-      };
-    }
-
-    // High-confidence, stateless reading material
     return {
-      tier: 'safe_to_close',
-      reason: 'Pure stateless reading article'
+      inputCounts: {
+        textareas: queryAllDeep('textarea').length,
+        selects: queryAllDeep('select').length,
+        passwords: passwordInputs.length,
+        appContainers: queryAllDeep(
+          '[role="dialog"], [role="application"], [contenteditable="true"], [role="textbox"], .monaco-editor, .ProseMirror, .ql-editor'
+        ).length,
+        otherInputs: otherInputs.length
+      },
+      urlParts: {
+        pathname: window.location.pathname,
+        hash: window.location.hash,
+        search: window.location.search
+      }
     };
   }
 
-  const safetyClassification = classifyClosureSafety(wordCount);
+  const closureTelemetry = collectClosureTelemetry();
 
   return {
     success: true,
     isDirty: dirtyStatus.isDirty,
     reason: dirtyStatus.reason || '',
     isLowConfidence,
-    closureTier: safetyClassification.tier,
-    closureReason: safetyClassification.reason,
+    closureTelemetry,
     url: window.location.href,
     title: cleanTitle,
     domain: window.location.hostname.replace(/^www\./, ''),

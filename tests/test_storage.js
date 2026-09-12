@@ -216,14 +216,20 @@ assert.strictEqual(getExpiry(await getTabById('f-new'), { ...fade, fadeUnopenedD
 assert.deepStrictEqual((await getArchivedTabs({ sortBy: 'expiring-soon' })).map(t => t.id),
   ['f-old', 'f-reopened', 'f-new', 'f-star'], 'Soonest to fade first, never-fading last');
 assert.strictEqual((await fadeExpiredTabs(fade)).fadedCount, 1);
-assert.strictEqual(await getTabById('f-old'), null, 'Expired note faded');
+assert.ok(typeof (await getTabById('f-old')).deletedAt === 'number', 'Fading tombstones, never hard-deletes');
+assert.ok(!(await getArchivedTabs()).some(t => t.id === 'f-old'), 'A faded note is hidden from queries');
+assert.strictEqual((await fadeExpiredTabs(fade)).fadedCount, 0, 'An already-tombstoned note does not fade twice');
+assert.strictEqual((await restoreDeletedTab('f-old')).deletedAt, undefined, 'A faded note is restorable before the purge');
+await softDeleteTab('f-old'); // re-tombstone so it stays out of the counts below
 const recaptured = await saveArchivedTab({ url: 'https://f.example/reopened', status: 'archived' });
 assert.strictEqual(recaptured.restoredAt, undefined, 'Recapture puts a note back in the inbox');
 await saveArchivedTab({ id: 'f-kept', url: 'https://f.example/kept', status: 'discarded', capturedAt: nowMs - 31 * DAY });
 await saveArchivedTab({ id: 'f-orphan', url: 'https://f.example/orphan', status: 'discarded', capturedAt: nowMs - 31 * DAY });
 assert.strictEqual((await fadeExpiredTabs(fade, new Set(['f-kept']))).fadedCount, 1);
-assert.ok(await getTabById('f-kept'), 'Records of still-suspended tabs survive fading');
-assert.strictEqual(await getTabById('f-orphan'), null, 'Untracked discarded records fade');
+assert.ok(!(await getTabById('f-kept')).deletedAt, 'Records of still-suspended tabs survive fading');
+assert.ok((await getTabById('f-orphan')).deletedAt, 'Untracked discarded records fade');
+await purgeDeletedTabs(0);
+assert.strictEqual(await getTabById('f-orphan'), null, 'The hourly purge finishes what the fade started');
 console.log('✓ Inbox views, fading and expiring-soon sort verified');
 
 // Test 13: JSON import - unknown ids dedupe on URL; field types are coerced
