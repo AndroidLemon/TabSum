@@ -413,6 +413,76 @@ neither would have been found by tuning recall:
 
 ---
 
+## Post-merge review rounds
+
+Two Copilot passes and one Gemini pass over the finished branch, run from the CLI
+before the PR. Four findings were real, one was implemented-then-reverted on
+measurement, and three were rejected with reasons.
+
+**Fixed:**
+
+- **The box test measured against the viewport, not the document** (Gemini).
+  `getBoundingClientRect` is viewport-relative, so on any page the reader had
+  scrolled, every control above the fold reported a negative `bottom` and
+  `isVisibleControl` called it hidden. A scrolled page reported zero controls and
+  was handed to the closer with the editor still on it. This is a bug **Step 8
+  introduced**, and it was reproducible on a corpus URL:
+  `grid-template-areas#examples` loads scrolled to its anchor, which pushed MDN's
+  interactive playground above the viewport, so the page classified
+  `safe_to_close` while reporting `Unsaved rich-text editor draft detected`.
+  Part of Step 8's +2.9 points was therefore fake recall bought by closing a page
+  with a live editor on it. Corrected figure below.
+- **`mergeFrameExtractions` substituted a subframe for a failed top frame**
+  (Copilot r1). Frame 0 is absent only when its injection threw; the fallback then
+  gave the tab an ad frame's url, title and prose and computed `isDirty` from
+  whatever survived. Now requires frame 0 and returns null otherwise — which both
+  callers already handle as "look again later".
+- **A missing `frameId` was coerced to 0** (Copilot r2), which let an
+  unidentified entry win the top-frame lookup and reopen the bug one line above
+  the fix. No longer defaulted.
+- **`hasMediaSurface` skipped the frame-area gate** (Copilot r2) that
+  `inputCounts` applies, so a 1x1 autoplay ad pixel raised the reading floor from
+  120 to 500 words for the whole tab. Both now share one `countable` filter.
+- **A hash resolved against any `name` attribute** (both reviewers), so `#search`
+  matched `<input name="search">` on any page with a search box and an SPA route
+  read as a deep link into prose. Scoped to `<a name>`.
+
+**Implemented, measured, reverted:** counting a formless `<select>` sitting off
+its page-load default, to catch SPA pickers with no `<form>`. docs.python.org sets
+its version pickers by script at load, so the test fired before the user touched
+anything and recall fell to 82.9% on exactly those two pages. Copilot's second
+pass independently found the other half: React sets a controlled select's value
+via `.value`, never the `selected` attribute, so `defaultSelected` is false on
+every option and the baseline collapses to index 0 — the fix does not even hold
+for its own target case. Recorded in the code as a known gap.
+
+**Rejected:**
+
+- *Accept any `<button>` as a form's submit signal, and count checkbox peers*
+  (Gemini), to catch checkbox-only surveys. The failure mode is concrete: a cookie
+  consent modal is a `<form>` with three toggles and a `<button type="button">`,
+  and it is visible by definition. This would suspend every page carrying one. The
+  hole is real; this fix costs more than it buys. Still open.
+- *Fall back to top-frame-only injection when `allFrames` throws* (Gemini). The
+  premise is unverified — `executeScript` with `allFrames` skips frames the
+  extension cannot access rather than rejecting — and `processTabArchival` is
+  already `try`-wrapped. A fallback that silently drops iframe dirty detection is
+  data-loss-shaped, which is the wrong trade for an unconfirmed failure.
+- *Require corroboration before trusting an `id` match* on a hash (Copilot r2).
+  An SPA whose route fragment collides with an unrelated element id is real but
+  speculative; no corpus page exhibits it, and the cheap half of the fix (the
+  `name` collision) is shipped.
+
+| | Close recall | Leaks |
+| :--- | ---: | ---: |
+| Step 10, as measured | 88.6% | 0 |
+| **After review fixes** | **85.7%** | **0** |
+
+The 2.9-point drop is the scroll fix reclaiming recall that Step 8 took by
+mistake. The floor stays at 0.82.
+
+---
+
 ## Known unknowns — name them, don't paper over them
 
 - **50 URLs is a small, self-selected sample**, and 8 are bot-blocked headless

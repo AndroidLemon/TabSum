@@ -195,6 +195,39 @@ function createMockServer() {
       return;
     }
 
+    // An editor at the top of a long page. The reader scrolls down to read; the
+    // editor leaves the viewport but not the page, and must still be counted.
+    if (req.url === '/scrolled-editor') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Notebook</title></head>
+        <body>
+          <div class="cm-editor" style="width:600px;height:300px">notebook cell the user was typing in</div>
+          <main><p>${'Prose that goes on well past the fold so the page actually scrolls. '.repeat(200)}</p></main>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    // #search must not "resolve" against <input name="search">, but a real
+    // <a name="..."> anchor still has to.
+    if (req.url.startsWith('/hash-names')) {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Handbook</title></head>
+        <body>
+          <input type="text" name="search" placeholder="Search">
+          <a name="deep-link"></a>
+          <main><p>${'The handbook explains each setting in turn. '.repeat(60)}</p></main>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
     res.end('<h1>404 Not Found</h1>');
   });
 
@@ -388,6 +421,53 @@ async function runHardeningTests() {
       console.log(`✓ ${testCase.route} -> ${testCase.tier} (${testCase.why})`);
       await casePage.close();
     }
+
+    // 4a-5. The box test compares against the document origin, not the viewport.
+    // Read raw, getBoundingClientRect made every control above the fold look
+    // off-screen, so any page the reader had scrolled reported zero controls.
+    const readAfterScroll = async (route, scrollTo) => {
+      const p = await context.newPage();
+      await p.goto(`http://localhost:${PORT}${route}`);
+      await p.waitForLoadState('domcontentloaded');
+      if (scrollTo) await p.evaluate((y) => window.scrollTo(0, y), scrollTo);
+      const out = await background.evaluate(async (r) => {
+        const tabs = await chrome.tabs.query({});
+        const target = tabs.find(t => t.url.includes(r));
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: target.id, allFrames: true },
+          files: ['src/content/in-tab-extractor.js']
+        });
+        return results?.[0]?.result;
+      }, route.split('#')[0]);
+      await p.close();
+      return out;
+    };
+
+    const unscrolled = await readAfterScroll('/scrolled-editor', 0);
+    const scrolled = await readAfterScroll('/scrolled-editor', 4000);
+    assert.strictEqual(unscrolled.closureTelemetry.inputCounts.appContainers, 1,
+      'the editor is counted before the reader scrolls');
+    assert.strictEqual(scrolled.closureTelemetry.inputCounts.appContainers, 1,
+      'and is still counted once it has been scrolled past — it left the viewport, not the page');
+    assert.strictEqual(
+      classifyClosureSafety({ ...scrolled.closureTelemetry, wordCount: scrolled.wordCount }).tier,
+      'suspend_only', 'so a scrolled page holding an editor is never handed to the closer');
+    console.log('✓ Scrolled-past editor still counted (viewport vs document origin)');
+
+    // 4a-6. A hash resolves against real anchors only, never a form control name.
+    const collide = await readAfterScroll('/hash-names#search', 0);
+    const realAnchor = await readAfterScroll('/hash-names#deep-link', 0);
+    assert.strictEqual(collide.closureTelemetry.urlParts.hashResolvesToAnchor, false,
+      '#search must not resolve against <input name="search">');
+    assert.strictEqual(realAnchor.closureTelemetry.urlParts.hashResolvesToAnchor, true,
+      'but a genuine <a name="deep-link"> still resolves');
+    assert.strictEqual(
+      classifyClosureSafety({ ...collide.closureTelemetry, wordCount: collide.wordCount }).tier,
+      'suspend_only', 'so an SPA route keeps its page');
+    assert.strictEqual(
+      classifyClosureSafety({ ...realAnchor.closureTelemetry, wordCount: realAnchor.wordCount }).tier,
+      'safe_to_close', 'while a deep-linked handbook still closes');
+    console.log('✓ Hash resolution ignores form-control names, honours real anchors');
 
     // 4b. Shadow DOM Form Input
     const shadowPage = await context.newPage();

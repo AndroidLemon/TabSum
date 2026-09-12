@@ -190,7 +190,10 @@ export const MIN_COUNTABLE_FRAME_AREA = 100 * 100;
 
 export function mergeFrameExtractions(frameResults = []) {
   const frames = (frameResults || [])
-    .map((entry) => ({ frameId: entry?.frameId ?? 0, result: entry?.result }))
+    // Do NOT default a missing frameId to 0. Coercing it would let an entry that
+    // never identified itself win the top-frame lookup below, which is the very
+    // substitution this merge refuses to make.
+    .map((entry) => ({ frameId: entry?.frameId, result: entry?.result }))
     .filter((frame) => frame.result && frame.result.success);
   if (!frames.length) return null;
 
@@ -207,17 +210,23 @@ export function mergeFrameExtractions(frameResults = []) {
   merged.isDirty = Boolean(dirty);
   merged.reason = dirty ? dirty.result.reason : '';
 
+  // One area gate for everything a subframe contributes except dirtiness. A 1x1
+  // ad iframe must not inflate the control counts, and it must not flip
+  // hasMediaSurface either: that raises the reading floor from 120 to 500 words,
+  // so an autoplay pixel would quietly stop ordinary articles from closing.
+  const countable = frames.filter(
+    (frame) => frame === top || (frame.result.frameArea || 0) >= MIN_COUNTABLE_FRAME_AREA
+  );
+
   const counts = { textareas: 0, selects: 0, passwords: 0, appContainers: 0, otherInputs: 0 };
-  for (const frame of frames) {
-    const isTop = frame === top;
-    if (!isTop && (frame.result.frameArea || 0) < MIN_COUNTABLE_FRAME_AREA) continue;
+  for (const frame of countable) {
     const frameCounts = frame.result.closureTelemetry?.inputCounts || {};
     for (const key of Object.keys(counts)) counts[key] += frameCounts[key] || 0;
   }
   merged.closureTelemetry = {
     ...top.result.closureTelemetry,
     inputCounts: counts,
-    hasMediaSurface: frames.some((frame) => frame.result.closureTelemetry?.hasMediaSurface)
+    hasMediaSurface: countable.some((frame) => frame.result.closureTelemetry?.hasMediaSurface)
   };
 
   return merged;

@@ -46,10 +46,18 @@
     // the standard clipboard-shim and virtualized-editor trick, so test the box
     // too. Only fully past the top or left origin counts — content below the fold
     // is off-viewport but genuinely on the page.
+    //
+    // The comparison MUST happen in document space. getBoundingClientRect is
+    // viewport-relative, so on a page the user has scrolled down, every control
+    // above the fold reports a negative bottom — including the editor they were
+    // typing in one scroll ago. Reading the rect raw silently emptied the control
+    // counts of every scrolled page and handed them to the closer.
     try {
       const rect = el.getBoundingClientRect();
       if (rect.width === 0 && rect.height === 0) return false;
-      if (rect.right <= 0 || rect.bottom <= 0) return false;
+      const pageX = window.scrollX || 0;
+      const pageY = window.scrollY || 0;
+      if (rect.right + pageX <= 0 || rect.bottom + pageY <= 0) return false;
     } catch { /* detached node: treat the render check as authoritative */ }
     return true;
   }
@@ -65,8 +73,11 @@
     } catch { /* malformed escape: the raw form is all we can try */ }
     return candidates.some((value) => {
       if (document.getElementById(value)) return true;
-      // Pre-HTML5 docs still anchor with <a name="...">.
-      return document.getElementsByName(value).length > 0;
+      // Pre-HTML5 docs still anchor with <a name="...">, but ONLY an anchor counts:
+      // every other name-bearing element is a form control, and honouring those
+      // makes #search resolve on any page carrying a search box — turning an SPA
+      // route into a "deep link into prose" and handing its state to the closer.
+      return Array.from(document.getElementsByName(value)).some((el) => el.tagName === 'A');
     });
   }
 

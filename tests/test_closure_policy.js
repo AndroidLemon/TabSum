@@ -225,6 +225,9 @@ assert.strictEqual(
 assert.strictEqual(
   mergeFrameExtractions([{ frameId: 0, result: { success: false } }, frame(7, { isDirty: true, reason: 'draft' })]), null,
   'a failed top frame is unusable even when a subframe reports unsaved work');
+assert.strictEqual(
+  mergeFrameExtractions([{ result: { success: true, title: 'nameless', closureTelemetry: {} } }]), null,
+  'an entry that never said which frame it was cannot be promoted to top frame');
 
 // Controls are summed so a framed form still counts...
 const counted = mergeFrameExtractions([
@@ -241,6 +244,14 @@ const pixel = mergeFrameExtractions([
 ]);
 assert.deepStrictEqual(pixel.closureTelemetry.inputCounts,
   { textareas: 0, selects: 0, passwords: 0, appContainers: 0, otherInputs: 0 }, 'a sub-threshold frame contributes no controls');
+// The same gate has to cover media, or an autoplay pixel raises the reading floor
+// from 120 to 500 words and quietly stops ordinary articles from closing.
+assert.strictEqual(
+  mergeFrameExtractions([
+    frame(0),
+    frame(7, { frameArea: 1, closureTelemetry: { inputCounts: {}, urlParts: {}, hasMediaSurface: true } })
+  ]).closureTelemetry.hasMediaSurface,
+  false, 'nor does it make the tab media-dominated');
 assert.strictEqual(
   mergeFrameExtractions([frame(0), frame(7, { frameArea: 1, isDirty: true, reason: 'Unsaved form input detected' })]).isDirty,
   true, 'but a tiny frame can still veto on dirtiness — size never gates safety');
