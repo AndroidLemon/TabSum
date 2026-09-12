@@ -60,7 +60,35 @@ and record how many must-suspend pages leak today as the safety baseline.
 
 ---
 
-## Step 2 — Visibility gate in the extractor
+## Step 2 — Iframe blindness in the zero-loss guard  ⚠️ SAFETY, NOT RATIO
+
+Found by probing the QA practice sites. `chrome.scripting.executeScript` at
+`src/background/service-worker.js:425` and `:557` targets `{ tabId }` with no
+`allFrames`, and `queryAllDeep` pierces shadow DOM but **not iframes**. So
+everything inside an iframe is invisible to `checkIsDirty`.
+
+Measured on `the-internet.herokuapp.com/tinymce`: a live rich-text editor sits in
+the iframe, and the extractor reports `editors deep=0, isDirty=false`. Every
+iframe-hosted editor — TinyMCE, CKEditor, the WordPress classic editor,
+Confluence, most CMS compose views — can hold an unsaved draft that the
+zero-loss guard cannot see. This is the "false zero-loss promise" the Phase 1
+red team flagged, still open.
+
+Fix: `target: { tabId, allFrames: true }`, which returns one result per frame.
+Merge them: `isDirty` true if **any** frame is dirty; sum `inputCounts` across
+frames; take title/text/meta/url from the top frame only (`frameId === 0`).
+Cross-origin ad frames will also be injected and return junk — `demoqa.com`
+carries 6 of them — so discard frames with no extractable content rather than
+letting them inflate counts or overwrite metadata.
+
+**Verify:** `npm run test:hardening`; add a fixture page with a same-origin
+iframe containing a dirty textarea and assert `isDirty === true`.
+
+- [ ] Done — tinymce isDirty now ____
+
+---
+
+## Step 3 — Visibility gate in the extractor
 
 In `src/content/in-tab-extractor.js`, filter every counted control through
 `el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })` with an
@@ -77,7 +105,7 @@ new must-suspend leaks.
 
 ---
 
-## Step 3 — Submit-bearing form owner for selects and toggles
+## Step 4 — Submit-bearing form owner for selects and toggles
 
 A `<select>` or checkbox/radio counts only when `el.form` exists **and** that
 form contains `button[type="submit"], input[type="submit"], button:not([type])`.
@@ -96,7 +124,7 @@ while `news.ycombinator.com/login` still suspends.
 
 ---
 
-## Step 4 — Restrict `otherInputs` to data-entry types
+## Step 5 — Restrict `otherInputs` to data-entry types
 
 Count only `text, number, date, datetime-local, tel, url, email, password`.
 Keep the existing search-box and `hidden/submit/button/reset` exclusions.
@@ -108,7 +136,7 @@ Checkbox/radio reach the count only via Step 3's toggle path.
 
 ---
 
-## Step 5 — Editor detection: semantic first, vendor fallback
+## Step 6 — Editor detection: semantic first, vendor fallback
 
 `appContainers` is about to carry the whole tool-detection load, so split it:
 
@@ -134,7 +162,7 @@ container instead of class names.
 
 ---
 
-## Step 6 — Rule 2: stop suspending deep-linked docs
+## Step 7 — Rule 2: stop suspending deep-linked docs
 
 `hash.length > 3` currently suspends **every anchored documentation link**. It
 scored 0 in the baseline only because the corpus had no anchors — a corpus gap,
@@ -151,7 +179,7 @@ not a policy-local fix. Keep the `checkout|cart|account` path tokens unchanged.
 
 ---
 
-## Step 7 — Unit tests for every new branch
+## Step 8 — Unit tests for every new branch
 
 `tests/test_closure_policy.js` is the fast pure-Node gate and must not depend on
 the network. Add a table-driven case per new branch: invisible control ignored,
@@ -170,20 +198,20 @@ yet.
 
 ---
 
-## Step 8 — Reconcile the two inverted functions
+## Step 9 — Reconcile the two inverted functions
 
 `checkIsDirty` and the `inputCounts` builder now share concepts (visibility,
 what counts as a control, search-box exclusion) but re-derive them separately in
 the same file. Extract the shared predicates once. This is cleanup, not
 behaviour: the ratio must not move.
 
-**Verify:** `npm run test:ratio` close rate identical to Step 6's number.
+**Verify:** `npm run test:ratio` close rate identical to Step 7's number.
 
-- [ ] Done — close rate ____% (must equal Step 6)
+- [ ] Done — close rate ____% (must equal Step 7)
 
 ---
 
-## Step 9 — Re-baseline and record
+## Step 10 — Re-baseline and record
 
 Re-run everything, commit the final report, and update the floor in
 `tests/telemetry_ratio.js` to just under the achieved rate so it becomes a
@@ -205,5 +233,12 @@ regression gate instead of an aspiration.
   `app=1 other=3` in one run and `0/0` in another — cookie-banner timing.
   If a step's number moves by less than ~3 points, suspect noise, re-run before
   believing it.
+- **QA practice sites are poor rule-1 controls.** demoqa.com,
+  the-internet.herokuapp.com and uitestingplayground.com were probed across 53
+  pages: almost every page is under 120 words, so rule 4 fires before rule 1 is
+  ever reached and current-vs-proposed agree everywhere. They earn their place in
+  the corpus for iframe/shadow-DOM/visibility edge cases (Step 2), not for the
+  ratio. Isolating rule 1 needs pages that are **both long and interactive** —
+  Swagger UI, Grafana, cloud consoles.
 - **The real close rate is this number × the AI-summary hit rate**, because
   `canCloseWith` gates closing on an AI summary independently of tier.
