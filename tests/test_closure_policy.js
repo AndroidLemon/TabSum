@@ -219,7 +219,12 @@ assert.strictEqual(
 // Identity never comes from a subframe, even when the top frame is listed second.
 const reordered = mergeFrameExtractions([frame(9, { title: 'ad', url: 'https://ads/x' }), frame(0, { title: 'real' })]);
 assert.strictEqual(reordered.title, 'real', 'the top frame wins regardless of result order');
-assert.strictEqual(mergeFrameExtractions([frame(4, { title: 'only' })]).title, 'only', 'with no top frame, the first usable one stands in');
+assert.strictEqual(
+  mergeFrameExtractions([frame(4, { title: 'only' })]), null,
+  'a surviving subframe never stands in for a top frame that failed');
+assert.strictEqual(
+  mergeFrameExtractions([{ frameId: 0, result: { success: false } }, frame(7, { isDirty: true, reason: 'draft' })]), null,
+  'a failed top frame is unusable even when a subframe reports unsaved work');
 
 // Controls are summed so a framed form still counts...
 const counted = mergeFrameExtractions([

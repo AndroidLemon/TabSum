@@ -194,7 +194,13 @@ export function mergeFrameExtractions(frameResults = []) {
     .filter((frame) => frame.result && frame.result.success);
   if (!frames.length) return null;
 
-  const top = frames.find((frame) => frame.frameId === 0) || frames[0];
+  // The top frame IS the tab. If its injection threw, we have no url, title,
+  // prose or dirty verdict for the page itself - only whatever subframes
+  // survived. Standing an ad frame in for it would archive the wrong content
+  // and, worse, report isDirty=false for a page whose unsaved state was never
+  // read. Both callers treat null as "try again later", which is the honest answer.
+  const top = frames.find((frame) => frame.frameId === 0);
+  if (!top) return null;
   const merged = { ...top.result };
 
   const dirty = frames.find((frame) => frame.result.isDirty);

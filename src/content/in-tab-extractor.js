@@ -32,7 +32,12 @@
     try {
       rendered = el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
     } catch {
-      rendered = el.offsetParent !== null; // checkVisibility landed in Chrome 105
+      // checkVisibility landed in Chrome 105. offsetParent is null for
+      // position:fixed even when the element is plainly on screen, so a fixed
+      // toolbar or docked editor panel must not be vetoed by it alone.
+      try {
+        rendered = el.offsetParent !== null || getComputedStyle(el).position === 'fixed';
+      } catch { rendered = true; }
     }
     if (!rendered) return false;
 
@@ -108,6 +113,13 @@
   // registration flows bind onChange and submit via fetch() with no submit button
   // at all — so a form carrying another data-entry control counts too. What stays
   // excluded is the lone picker: one control, no submit, no siblings.
+  //
+  // Counting a formless <select> that sits off its page-load default was tried
+  // and REVERTED: docs.python.org sets its version pickers by script on load, so
+  // "modified" is true before the user touches anything, and close recall fell
+  // 88.6% -> 82.9% on exactly those two pages. The extractor runs long after load
+  // and cannot tell a script's selection from a person's. The formless SPA select
+  // holding real state therefore stays a known gap, not a fixed one.
   const FORM_DATA_ENTRY = 'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]), textarea';
   function isInMeaningfulForm(el) {
     const form = el.form;
