@@ -3,4 +3,6 @@ tests/.playwright_user_data*
 .DS_Store
 DOGFOOD_REPORT.md
 dist/
-logs/
+# Run output, regenerated on every `npm run test:ratio`. The debate logs
+# beside it are decision records the plan cites, so they stay tracked.
+logs/closure-ratio-*.md

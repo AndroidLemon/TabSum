@@ -31,7 +31,12 @@ const argOf = (flag, fallback) => {
 };
 
 const CORPUS = path.resolve(argOf('--corpus', './tests/fixtures/corpus.txt'));
-const CLOSE_RATE_FLOOR = Number(argOf('--floor', '0.60'));
+// 0.82 against a measured 88.6% (31 of 35). Deliberately not set just under the
+// achieved rate: 8 corpus URLs are bot-blocked headless (403/429) and the
+// reachable set shifts run to run, so the denominator itself moves. This
+// tolerates two pages of drift and trips on three, matching the ~3-point noise
+// band recorded in the plan. The leak gate below is the hard one.
+const CLOSE_RATE_FLOOR = Number(argOf('--floor', '0.82'));
 const CONCURRENCY = 5;
 const NAV_TIMEOUT_MS = 25000;
 const SETTLE_MS = 1500; // let client-side routers paint before reading the DOM

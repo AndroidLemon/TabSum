@@ -362,7 +362,54 @@ regression gate instead of an aspiration.
 
 **Verify:** `npm run test:all && npm run test:ratio`.
 
-- [ ] Done — final close rate ____%, leaks ____
+- [x] Done — final close recall **88.6%** (31/35), must-suspend leaks **0**.
+      `npm run test:all` and `npm run test:ratio` both green.
+      Floor set to **0.82**, deliberately not just under the achieved rate: 8
+      corpus URLs are bot-blocked headless (403/429) so the reachable set — and
+      therefore the denominator — shifts between runs. 0.82 tolerates two pages of
+      drift and trips on three, matching the ~3-point noise band below. The leak
+      gate is the hard one and has no tolerance.
+      Also narrowed `.gitignore` from `logs/` to `logs/closure-ratio-*.md`: the
+      plan cites both debate transcripts and neither was tracked, so a fresh clone
+      got dangling references. Run output stays ignored since it is regenerated
+      every run.
+
+---
+
+## Outcome
+
+| Step | Close recall | Leaks |
+| :--- | ---: | ---: |
+| 1 — control set (baseline) | 45.7% | 0 |
+| 2 — iframes | 42.9% | 0 |
+| 3 — visibility | 68.6% | 0 |
+| 4 — real forms | 77.1% | 0 |
+| 5 — data-entry allowlist | *skipped, inert* | — |
+| 6 — editor surfaces | 77.1% | 0 |
+| 7 — anchor resolution | 85.7% | 0 |
+| 8 — off-screen controls | 88.6% | 0 |
+| 9 — reconcile the two lists | 88.6% | 0 |
+
+The original question — is the auto-close thesis viable — is answered yes, but
+the prediction that got us here was wrong in both directions. The debate expected
+the coarse path/hash rules to be the culprit; they caught **zero**. Rule 1 was
+the entire policy, and it was counting site chrome.
+
+**Two data-loss bugs surfaced that had nothing to do with the ratio**, and
+neither would have been found by tuning recall:
+- iframe-hosted editors were invisible to the zero-loss guard (Step 2);
+- the dirty check and the classifier kept separate editor lists, so an unsaved
+  Ace or CodeMirror draft read as clean (Step 9).
+
+**Still open, deliberately not done here:**
+- `petstore.swagger.io` is caught only by the word floor; a fuller Swagger UI
+  would leak. Its "Try it out" controls produce `appContainers=0`.
+- HN and `github.com/torvalds/linux` are held open because `extractCleanText`
+  returns 0–19 words on table and app-shell layouts. That is an extraction
+  problem, not a closure problem, and belongs in its own piece of work.
+- The vendor editor class list rots on a schedule. The upgrade path is recorded
+  in `in-tab-extractor.js`: score a tool by off-screen-textarea plus tall scroll
+  container rather than by class name.
 
 ---
 
