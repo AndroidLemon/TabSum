@@ -56,7 +56,10 @@ measured against a metric that cannot detect data loss.
 **Verify:** `npm run test:ratio` — report both numbers. Expect red on close rate,
 and record how many must-suspend pages leak today as the safety baseline.
 
-- [ ] Done — close rate ____%, must-suspend leaks ____
+- [x] Done — close recall **45.7%** (16/35), must-suspend leaks **0** of 14 reachable.
+      Metric changed from raw ratio to recall over `expect: close`, so adding docs
+      can no longer inflate it. Safety baseline is 0 leaks: today's policy is
+      over-conservative but loses nothing. No later step may raise this number.
 
 ---
 
