@@ -35,6 +35,23 @@
     }
   }
 
+  // A select or toggle only means "data entry" if it sits in a real form. On its
+  // own it is a docs version picker, a language switcher, or a CSS disclosure
+  // hack driving a menu.
+  //
+  // "Real" is two tests, not one. A submit button is the obvious signal, but SPA
+  // registration flows bind onChange and submit via fetch() with no submit button
+  // at all — so a form carrying another data-entry control counts too. What stays
+  // excluded is the lone picker: one control, no submit, no siblings.
+  const FORM_DATA_ENTRY = 'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]), textarea';
+  function isInMeaningfulForm(el) {
+    const form = el.form;
+    if (!form) return false;
+    if (form.querySelector('button[type="submit"], input[type="submit"], button:not([type])')) return true;
+    return Array.from(form.querySelectorAll(FORM_DATA_ENTRY))
+      .some(peer => peer !== el && !isSearchInput(peer) && isVisibleControl(peer));
+  }
+
   // Shared search-input exclusion so the dirty check and the closure
   // classifier agree on what counts as a site search box (not user content).
   const SEARCH_INPUT_NAMES = new Set(['q', 'query', 'search', 's']);
@@ -192,14 +209,18 @@
   //    live DOM so it has to happen here; turning it into a closure tier does not, so that
   //    lives in src/shared/closure-policy.js where a Node test can reach it.
   function collectClosureTelemetry() {
+    const TOGGLE_TYPES = new Set(['checkbox', 'radio']);
+    const typeOf = (i) => (i.getAttribute('type') || 'text').toLowerCase();
     const candidateInputs = queryAllDeep('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"])')
-      .filter(i => !isSearchInput(i) && isVisibleControl(i));
-    const otherInputs = candidateInputs.filter(i => (i.getAttribute('type') || 'text').toLowerCase() !== 'email');
-    const passwordInputs = otherInputs.filter(i => (i.getAttribute('type') || '').toLowerCase() === 'password');
+      .filter(i => !isSearchInput(i) && isVisibleControl(i))
+      // A toggle outside a submittable form is site chrome, not user state.
+      .filter(i => !TOGGLE_TYPES.has(typeOf(i)) || isInMeaningfulForm(i));
+    const otherInputs = candidateInputs.filter(i => typeOf(i) !== 'email');
+    const passwordInputs = otherInputs.filter(i => typeOf(i) === 'password');
     return {
       inputCounts: {
         textareas: queryAllDeep('textarea').filter(isVisibleControl).length,
-        selects: queryAllDeep('select').filter(isVisibleControl).length,
+        selects: queryAllDeep('select').filter(s => isVisibleControl(s) && isInMeaningfulForm(s)).length,
         passwords: passwordInputs.length,
         appContainers: queryAllDeep(
           '[role="dialog"], [role="application"], [contenteditable="true"], [role="textbox"], .monaco-editor, .ProseMirror, .ql-editor'

@@ -10,7 +10,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import assert from 'node:assert';
 import { chromium } from '@playwright/test';
-import { mergeFrameExtractions } from '../src/shared/closure-policy.js';
+import { mergeFrameExtractions, classifyClosureSafety } from '../src/shared/closure-policy.js';
 
 const PORT = 8891;
 import { buildTestExtension, extensionLaunchOptions } from './helpers/test-extension.js';
@@ -118,6 +118,25 @@ function createMockServer() {
         <body>
           <textarea id="draft"></textarea>
           <script>document.getElementById('draft').value = 'Half-written post the user has not saved yet.';</script>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    // Step 4's intent, from the other side: a long article whose only controls
+    // are a docs version picker and a CSS-hack menu toggle, neither in a form.
+    if (req.url === '/orphan-picker') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>API Reference</title></head>
+        <body>
+          <nav>
+            <input type="checkbox" id="menu-toggle"><label for="menu-toggle">Menu</label>
+            <select id="version"><option>v3.12</option><option>v3.11</option></select>
+          </nav>
+          <main><h1>Reference</h1><p>${'The reference describes every parameter in detail. '.repeat(40)}</p></main>
         </body>
         </html>
       `);
@@ -246,6 +265,32 @@ async function runHardeningTests() {
       'and identity must still come from the top frame');
     console.log(`✓ Framed editor detected across ${framedCheck.allFrames.length} frames: reason = "${framedMerged.reason}"`);
     await framedPage.close();
+
+    // 4a-3. Orphan picker: a version <select> and a menu checkbox outside any
+    // form are site chrome, and must not hold a long article open.
+    const orphanPage = await context.newPage();
+    await orphanPage.goto(`http://localhost:${PORT}/orphan-picker`);
+    await orphanPage.waitForLoadState('domcontentloaded');
+
+    const orphanCheck = await background.evaluate(async () => {
+      const tabs = await chrome.tabs.query({});
+      const target = tabs.find(t => t.url.includes('/orphan-picker'));
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: target.id, allFrames: true },
+        files: ['src/content/in-tab-extractor.js']
+      });
+      return results?.[0]?.result;
+    });
+
+    assert.strictEqual(orphanCheck.closureTelemetry.inputCounts.selects, 0,
+      'a version picker outside a form is chrome, not data entry');
+    assert.strictEqual(orphanCheck.closureTelemetry.inputCounts.otherInputs, 0,
+      'a menu checkbox outside a form is chrome, not data entry');
+    assert.strictEqual(
+      classifyClosureSafety({ ...orphanCheck.closureTelemetry, wordCount: orphanCheck.wordCount }).tier,
+      'safe_to_close', 'so the article underneath them stays closeable');
+    console.log(`✓ Orphan picker ignored: article with ${orphanCheck.wordCount} words stays closeable`);
+    await orphanPage.close();
 
     // 4b. Shadow DOM Form Input
     const shadowPage = await context.newPage();

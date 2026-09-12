@@ -149,7 +149,21 @@ while `news.ycombinator.com/login` still suspends.
 
 **Verify:** `npm run test:ratio` — HN login must remain `suspend_only`.
 
-- [ ] Done — close rate ____%, leaks ____
+- [x] Done — close recall **68.6% -> 77.1%**, leaks **0**. Reading pages held
+      open: 11 -> 8 of 35. All 8 suites green.
+      The submit-button test alone was too narrow and `test_hybrid_mode.js`
+      caught it: its `/untouched-form` fixture is a registration form with **no
+      submit button**, so gating on submit left it with zero counted controls and
+      it became closeable. That is exactly the SPA-form hole predicted in
+      `logs/debate-rule1-20260912.md` — React flows bind onChange and POST via
+      `fetch()`.
+      "Real form" is therefore two tests, not one: a submit button, **or** another
+      visible data-entry control in the same form. What stays excluded is the lone
+      picker — one control, no submit, no siblings — which is all a docs version
+      switcher or a CSS-hack menu toggle ever is.
+      Added `/orphan-picker` to `test_tab_hardening.js` for the other half: a
+      280-word article whose only controls are a formless `<select>` and menu
+      checkbox must stay closeable. Nothing covered that before.
 
 ---
 
