@@ -116,13 +116,18 @@ export function classifyClosureSafety({ inputCounts = {}, urlParts = {}, wordCou
   const pathname = String(urlParts.pathname || '').toLowerCase();
   const hash = String(urlParts.hash || '').toLowerCase();
   const search = String(urlParts.search || '').toLowerCase();
+  const hashResolvesToAnchor = Boolean(urlParts.hashResolvesToAnchor);
 
   // 1. Real interactive controls (forms; lone search/email inputs are exempt upstream)
   if (textareas > 0 || selects > 0 || passwords > 0 || appContainers > 0 || otherInputs >= 3) {
     return { tier: 'suspend_only', reason: 'Contains form or interactive input controls' };
   }
   // 2. Stateful URL path or client-side hash routing
-  if (hash.length > 3 || pathname.includes('checkout') || pathname.includes('cart') || pathname.includes('account')) {
+  // A deep link into documentation is not client-side routing: every anchored
+  // docs URL used to land here, and the corpus only scored this rule at zero
+  // because it contained no anchors.
+  if ((hash.length > 3 && !hashResolvesToAnchor) ||
+      pathname.includes('checkout') || pathname.includes('cart') || pathname.includes('account')) {
     return { tier: 'suspend_only', reason: 'Stateful URL path or client-side hash route' };
   }
   // 3. Multi-param search result listings (preserve the user's query state)

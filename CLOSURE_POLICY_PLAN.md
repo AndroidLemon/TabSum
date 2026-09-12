@@ -255,7 +255,32 @@ not a policy-local fix. Keep the `checkout|cart|account` path tokens unchanged.
 
 **Verify:** the anchored URLs added in Step 1 classify `safe_to_close`.
 
-- [ ] Done — close rate ____%, leaks ____
+- [x] Done — close recall **77.1% -> 85.7%**, leaks **0**. Reading pages held
+      open: 8 -> 5 of 35. All 8 suites green.
+      Three of the four anchored docs URLs now close. The fourth
+      (`.../grid-template-areas#examples`) is still held, but by rule 1, not the
+      hash — its unanchored twin is held too, so the hash fix worked and that page
+      has a separate cause.
+      Anchor resolution runs in the extractor against the **raw** hash, never the
+      lowercased copy the policy holds: element ids are case-sensitive. It also
+      tries the percent-decoded form and `getElementsByName`, since pre-HTML5 docs
+      still anchor with `<a name="...">`.
+
+### What is left, and why
+
+The remaining 5 are two distinct causes, neither of them rule 2:
+
+| page | cause |
+| :--- | :--- |
+| `mdn/grid-template-areas` (x2, anchored and not) | rule 1 — the interactive CSS playground is a real editor surface, so this is arguably correct |
+| `news.ycombinator.com/item`, `/news` | rule 4 — extractor returns **0 words** on HN's table layout |
+| `github.com/torvalds/linux` | rule 4 — 19 words extracted from a repo landing page |
+
+The HN and GitHub rows are an **extraction** failure, not a policy failure: the
+readability heuristic returns nothing on table-based and app-shell layouts, and
+rule 4 then correctly refuses to close a page it cannot summarise. Fixing those
+means improving `extractCleanText`, which is a different piece of work from the
+closure policy and should not be smuggled into this plan.
 
 ---
 

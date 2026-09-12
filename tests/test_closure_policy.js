@@ -143,6 +143,26 @@ assert.ok(isScriptableUrl('https://example.com'), 'https is scriptable');
 assert.ok(!isScriptableUrl(''), 'an empty url is not scriptable');
 assert.ok(!isScriptableUrl(null), 'a missing url is not scriptable');
 
+// --- A deep link into docs is not client-side routing ---
+console.log('Testing hash anchor disambiguation...');
+
+const hashTier = (urlParts) => classifyClosureSafety({
+  inputCounts: {}, wordCount: 900, urlParts: { pathname: '/docs/fs', search: '', ...urlParts }
+}).tier;
+
+assert.strictEqual(hashTier({ hash: '#fspromisesreadfile' }), 'suspend_only',
+  'an unresolved hash still reads as a client-side route');
+assert.strictEqual(hashTier({ hash: '#fspromisesreadfile', hashResolvesToAnchor: true }), 'safe_to_close',
+  'but a hash naming a real element is a deep link into prose');
+assert.strictEqual(hashTier({ hash: '#/orders/42' }), 'suspend_only',
+  'SPA route fragments resolve to nothing and still suspend');
+assert.strictEqual(hashTier({ hash: '' }), 'safe_to_close', 'no hash at all is unaffected');
+assert.strictEqual(hashTier({ hash: '#a' }), 'safe_to_close', 'short hashes were always exempt');
+// The path tokens are independent of the anchor escape hatch.
+assert.strictEqual(hashTier({ pathname: '/checkout/step-2', hash: '#top', hashResolvesToAnchor: true }), 'suspend_only',
+  'a resolving anchor never excuses a checkout path');
+console.log('✓ Hash anchor disambiguation verified');
+
 // --- Media-dominated pages need real prose, not just any prose ---
 console.log('Testing media density floor...');
 

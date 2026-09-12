@@ -35,6 +35,22 @@
     }
   }
 
+  function resolvesToAnchor(rawHash) {
+    const id = (rawHash || '').replace(/^#/, '');
+    if (!id) return false;
+    // Browsers match the raw fragment first, then its percent-decoded form.
+    const candidates = [id];
+    try {
+      const decoded = decodeURIComponent(id);
+      if (decoded !== id) candidates.push(decoded);
+    } catch { /* malformed escape: the raw form is all we can try */ }
+    return candidates.some((value) => {
+      if (document.getElementById(value)) return true;
+      // Pre-HTML5 docs still anchor with <a name="...">.
+      return document.getElementsByName(value).length > 0;
+    });
+  }
+
   // An editor surface means the tab is a tool, not a document.
   //
   // Split deliberately. The first group is structural and will still be true in
@@ -263,7 +279,13 @@
       urlParts: {
         pathname: window.location.pathname,
         hash: window.location.hash,
-        search: window.location.search
+        search: window.location.search,
+        // A hash is a client-side route only when nothing in the page answers to
+        // it. `#installation` on a docs page is a deep link into prose the user
+        // is reading; `#/orders/42` in an SPA is navigation state. Only the live
+        // DOM can tell them apart, which is why this is telemetry and not a
+        // policy-local check.
+        hashResolvesToAnchor: resolvesToAnchor(window.location.hash)
       }
     };
   }
