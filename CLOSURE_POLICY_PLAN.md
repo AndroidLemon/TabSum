@@ -473,10 +473,80 @@ for its own target case. Recorded in the code as a known gap.
   speculative; no corpus page exhibits it, and the cheap half of the fix (the
   `name` collision) is shipped.
 
+### Round 4 — the GitHub Copilot reviewer on the PR
+
+- **Fixed: `position:fixed` controls were rescued by the scroll fix.** A fixed
+  element's rect is viewport-relative by definition and does not move with scroll,
+  so adding the scroll offset gave a toolbar parked at `top:-9999px` a positive
+  document-space bottom on any page scrolled far enough. The mirror of the bug it
+  fixed, in the over-suspend direction. The box test now short-circuits when the
+  rect is already on screen, and only consults `getComputedStyle` on the rare
+  off-origin path.
+- **Fixed: the ratio harness scored `tier`, not what ships.** `processTabArchival`
+  aborts on `isDirty` long before the tier is consulted, so a dirty page tiered
+  `safe_to_close` is never actually closed — `pkg.go.dev` is exactly that. Scoring
+  it as a close overstated recall and invented leaks production cannot produce.
+  Both gates now use `tier === 'safe_to_close' && !isDirty`.
+- **Fixed: the leak gate silently ignored unreachable must-suspend pages.** Two of
+  the corpus's dangerous URLs are bot-blocked, so "0 leaks" was quietly computed
+  over a smaller set than it appeared. The report and the console line now name
+  how many must-suspend pages were actually measured.
+- **Fixed:** subframes no longer run `extractCleanText` at all — the merge throws
+  their prose away, so cloning and walking the body in every ad frame was pure
+  cost. Also corrected a stale `--floor 0.60` usage string and the 88.6% rationale.
+- **Rejected:** rejecting a control when *either* dimension is zero (today it must
+  be both). Stricter visibility means fewer counted controls, which is the
+  data-loss direction, and no corpus page shows a gain. Inert-until-measured, per
+  the Step 5 and Step 6 precedent.
+- **Rejected:** tightening the pre-Chrome-105 `offsetParent` fallback to re-check
+  `display`/`visibility`/`opacity`. `checkVisibility` shipped in 2022, so the
+  branch is dead on anything MV3 runs on; more code in an unreachable path is the
+  wrong trade.
+
+### ⚠️ Confirmed open: cross-origin frames are still invisible to the zero-loss guard
+
+Copilot's critical finding, verified against the code and **not fixed here**.
+
+`manifest.json` declares `optional_host_permissions: ['<all_urls>']` with no
+static host grant, and the sweep checks only `verdict.requiredOrigin` — the
+*top-level* origin (`service-worker.js:331`). `executeScript({ allFrames: true })`
+injects only into frames the extension may script, and **omits the rest without
+erroring**. So in per-origin permission mode a cross-origin child frame never
+appears in the results, `mergeFrameExtractions` sees a complete-looking set, and
+`merged.isDirty` is false for a draft nobody read.
+
+`originPatternFor` is `protocol//hostname/*`, so this bites a different subdomain
+too, not just a different site. Step 2's claim must therefore be read narrowly: it
+closed the same-origin iframe hole, and the cross-origin one only when the user
+has granted `<all_urls>`. The hardening fixture is same-origin, so no test covers
+this.
+
+The fix is a design change, not a patch, and a careless version is worse than the
+bug: failing closed whenever any frame is missing would suspend every monetized
+page on the web. Sketch — have the top frame report how many *substantial* iframes
+it can see (area-gated, the way `MIN_COUNTABLE_FRAME_AREA` already gates counts),
+compare against the frames actually injected, and downgrade to `suspend_only`
+when the two disagree. Needs its own measurement pass.
+
 | | Close recall | Leaks |
 | :--- | ---: | ---: |
 | Step 10, as measured | 88.6% | 0 |
-| **After review fixes** | **85.7%** | **0** |
+| After review rounds 1-3 | 85.7% | 0 |
+| **After round 4 (shipped predicate)** | **82.9%** | **0** |
+
+The last drop is not a regression — it is the metric learning to tell the truth.
+`pkg.go.dev/net/http` tiers `safe_to_close` but reports "Unsaved textarea content
+detected" on every load, so `processTabArchival` aborts on it long before the tier
+matters. It was being scored as a close it never was. The floor moved 0.82 -> 0.77
+to keep the same two-pages-of-drift tolerance against the stricter metric; the
+leak gate is unchanged and still has none.
+
+That page is worth a follow-up on its own: `checkIsDirty` is deliberately not
+visibility-gated (Step 3), so pkg.go.dev's hidden clipboard-shim textareas mark a
+pure documentation page as carrying unsaved work **forever**. It can never be
+archived. The Step 3 reasoning still stands — a hidden textarea with real content
+is real content — but a shim that ships pre-filled on every page load is not the
+case that rule was written for.
 
 The 2.9-point drop is the scroll fix reclaiming recall that Step 8 took by
 mistake. The floor stays at 0.82.

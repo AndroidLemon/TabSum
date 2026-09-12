@@ -204,6 +204,7 @@ function createMockServer() {
         <head><title>Notebook</title></head>
         <body>
           <div class="cm-editor" style="width:600px;height:300px">notebook cell the user was typing in</div>
+          <textarea style="position:fixed;top:-9999px;left:0;width:200px;height:40px"></textarea>
           <main><p>${'Prose that goes on well past the fold so the page actually scrolls. '.repeat(200)}</p></main>
         </body>
         </html>
@@ -452,7 +453,14 @@ async function runHardeningTests() {
     assert.strictEqual(
       classifyClosureSafety({ ...scrolled.closureTelemetry, wordCount: scrolled.wordCount }).tier,
       'suspend_only', 'so a scrolled page holding an editor is never handed to the closer');
-    console.log('✓ Scrolled-past editor still counted (viewport vs document origin)');
+    // The mirror of that bug: a position:fixed element's rect is viewport-relative
+    // by definition and does not move with scroll, so adding the scroll offset
+    // would rescue a toolbar genuinely parked at top:-9999px on any long page.
+    assert.strictEqual(unscrolled.closureTelemetry.inputCounts.textareas, 0,
+      'a fixed control parked off-screen is not counted');
+    assert.strictEqual(scrolled.closureTelemetry.inputCounts.textareas, 0,
+      'and scrolling does not rescue it — fixed elements do not move with scroll');
+    console.log('✓ Scrolled-past editor still counted; parked fixed control still is not');
 
     // 4a-6. A hash resolves against real anchors only, never a form control name.
     const collide = await readAfterScroll('/hash-names#search', 0);

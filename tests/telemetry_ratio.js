@@ -17,7 +17,7 @@
  * (same trick as tests/test_hybrid_mode.js:198). bypassCSP mirrors the isolated
  * world the real executeScript injection gets, which page CSP does not govern.
  *
- * Usage: node tests/telemetry_ratio.js [--corpus path] [--floor 0.60]
+ * Usage: node tests/telemetry_ratio.js [--corpus path] [--floor 0.77]
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -31,12 +31,15 @@ const argOf = (flag, fallback) => {
 };
 
 const CORPUS = path.resolve(argOf('--corpus', './tests/fixtures/corpus.txt'));
-// 0.82 against a measured 88.6% (31 of 35). Deliberately not set just under the
-// achieved rate: 8 corpus URLs are bot-blocked headless (403/429) and the
-// reachable set shifts run to run, so the denominator itself moves. This
-// tolerates two pages of drift and trips on three, matching the ~3-point noise
-// band recorded in the plan. The leak gate below is the hard one.
-const CLOSE_RATE_FLOOR = Number(argOf('--floor', '0.82'));
+// 0.77 against a measured 82.9% (29 of 35), holding the same two-pages-of-drift
+// tolerance the old floor had. The threshold moved because the METRIC changed,
+// not because the policy got worse: recall now scores what actually ships
+// (safe_to_close AND not dirty), and pkg.go.dev — tiered closeable but reporting
+// an unsaved textarea on every load — stopped counting as a close it never was.
+// Corpus URLs are bot-blocked headless (403/429/503) and the reachable set shifts
+// run to run, so the denominator itself moves. The leak gate below is the hard
+// one, and it has no tolerance.
+const CLOSE_RATE_FLOOR = Number(argOf('--floor', '0.77'));
 const CONCURRENCY = 5;
 const NAV_TIMEOUT_MS = 25000;
 const SETTLE_MS = 1500; // let client-side routers paint before reading the DOM
@@ -127,9 +130,17 @@ function report(results, floor) {
 
   const wantClose = ok.filter((r) => r.expect === 'safe_to_close');
   const wantSuspend = ok.filter((r) => r.expect === 'suspend_only');
-  // Leaks are the gate: a tool classified closeable is data loss, not a bad ratio.
-  const leaks = wantSuspend.filter((r) => r.tier === 'safe_to_close');
-  const missed = wantClose.filter((r) => r.tier === 'suspend_only');
+  // Measure what SHIPS, not just the tier. processTabArchival aborts on isDirty
+  // long before the tier is consulted, so a dirty page tiered safe_to_close is
+  // never actually closed. Scoring it as a close overstated recall and invented
+  // leaks that production could not produce.
+  const wouldClose = (r) => r.tier === 'safe_to_close' && !r.isDirty;
+  // Leaks are the gate: a tool that would really be closed is data loss.
+  const leaks = wantSuspend.filter(wouldClose);
+  const missed = wantClose.filter((r) => !wouldClose(r));
+  // A must-suspend page that never loaded proves nothing. If bot-blocking takes
+  // out the dangerous half of the corpus, "0 leaks" is vacuous, so say so.
+  const unreachableSuspend = failed.filter((r) => r.expect === 'suspend_only');
   // Recall over the pages that SHOULD close — unlike a raw ratio, adding more
   // docs to the corpus can't inflate it.
   const closeRate = wantClose.length ? (wantClose.length - missed.length) / wantClose.length : 0;
@@ -151,6 +162,7 @@ function report(results, floor) {
     '| :--- | ---: | :--- |',
     `| **Must-suspend leaks** | **${leaks.length}** | must be 0 — a leak is data loss |`,
     `| Close recall (of ${wantClose.length} expect:close) | ${pct(wantClose.length - missed.length, wantClose.length)} | >= ${(floor * 100).toFixed(0)}% |`,
+    `| Must-suspend pages measured | ${wantSuspend.length} of ${wantSuspend.length + unreachableSuspend.length} | the leak gate only sees these |`,
     '',
     '## Tier split (all reachable, for continuity with the baseline)',
     '',
@@ -194,7 +206,8 @@ function report(results, floor) {
 
   return { markdown: lines.join('\n') + '\n', closeRate, ok: ok.length, closeCount: close.length,
            suspendCount: suspend.length, failed: failed.length,
-           leaks: leaks.length, missed: missed.length, wantClose: wantClose.length };
+           leaks: leaks.length, missed: missed.length, wantClose: wantClose.length,
+           wantSuspend: wantSuspend.length, unreachableSuspend: unreachableSuspend.length };
 }
 
 (async () => {
@@ -208,7 +221,7 @@ function report(results, floor) {
     const batch = urls.slice(i, i + CONCURRENCY);
     const settled = await Promise.all(batch.map((u) => measure(context, u)));
     for (const r of settled) {
-      const bad = !r.error && r.tier !== r.expect;
+      const bad = !r.error && (r.tier === 'safe_to_close' && !r.isDirty ? 'safe_to_close' : 'suspend_only') !== r.expect;
       const mark = r.error ? '✗' : bad && r.expect === 'suspend_only' ? '⚠ LEAK  ' : bad ? '· held   ' : r.tier === 'safe_to_close' ? '→ close  ' : '→ suspend';
       console.log(`  ${mark} ${r.url}${r.error ? ` (${r.error})` : ''}`);
     }
@@ -222,7 +235,10 @@ function report(results, floor) {
   fs.writeFileSync(file, out.markdown);
 
   console.log(`\nclose ${out.closeCount} / suspend ${out.suspendCount} / unreachable ${out.failed}`);
-  console.log(`must-suspend leaks: ${out.leaks}   reading pages held open: ${out.missed}/${out.wantClose}`);
+  console.log(`must-suspend leaks: ${out.leaks}/${out.wantSuspend} measured   reading pages held open: ${out.missed}/${out.wantClose}`);
+  if (out.unreachableSuspend > 0) {
+    console.log(`note: ${out.unreachableSuspend} must-suspend page(s) never loaded — the leak gate did not see them.`);
+  }
   console.log(`Report: ${file}`);
 
   if (out.ok === 0) {

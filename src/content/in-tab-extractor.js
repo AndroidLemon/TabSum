@@ -55,9 +55,19 @@
     try {
       const rect = el.getBoundingClientRect();
       if (rect.width === 0 && rect.height === 0) return false;
-      const pageX = window.scrollX || 0;
-      const pageY = window.scrollY || 0;
-      if (rect.right + pageX <= 0 || rect.bottom + pageY <= 0) return false;
+      // Still at or past the viewport origin: on screen under either reading.
+      if (rect.right > 0 && rect.bottom > 0) return true;
+
+      // Past the origin. For a position:fixed element that is the whole truth —
+      // its rect is viewport-relative by definition and does not move with
+      // scroll, so adding the scroll offset would "rescue" a toolbar genuinely
+      // parked at top:-9999px on any page scrolled far enough.
+      let fixed = false;
+      try { fixed = getComputedStyle(el).position === 'fixed'; } catch { /* detached */ }
+      if (fixed) return false;
+
+      if (rect.right + (window.scrollX || 0) <= 0) return false;
+      if (rect.bottom + (window.scrollY || 0) <= 0) return false;
     } catch { /* detached node: treat the render check as authoritative */ }
     return true;
   }
@@ -285,7 +295,11 @@
     return fullText;
   }
 
-  const cleanText = extractCleanText();
+  // Subframes contribute unsaved work and controls; mergeFrameExtractions throws
+  // their prose away and keeps the top frame's. Cloning and walking the body in
+  // every ad frame on the page is pure cost, so don't.
+  const isTopFrame = window.top === window.self;
+  const cleanText = isTopFrame ? extractCleanText() : '';
   const words = cleanText.trim().split(/\s+/).filter(Boolean);
   const wordCount = words.length;
   const readingTimeMinutes = Math.max(1, Math.ceil(wordCount / 200));
