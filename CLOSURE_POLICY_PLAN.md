@@ -115,7 +115,22 @@ engine already knows.
 **Verify:** `npm run test:policy` green; `npm run test:ratio` close rate up, zero
 new must-suspend leaks.
 
-- [ ] Done — close rate ____%, leaks ____
+- [x] Done — close recall **42.9% -> 68.6%**, leaks **0**. Gate green for the
+      first time (floor is 60%). Reading pages held open: 20 -> 11 of 35.
+      The visibility gate alone took recall past the floor, but it first
+      exposed a leak the plan did not predict: **youtube.com/watch** closed.
+      YouTube was never deliberately protected — it only ever tripped rule 1 via
+      hidden comment boxes counted as `appContainers`, and making counting honest
+      removed that accident. A video page's state is playback position, which the
+      URL does not carry, so suspending is right; the corpus label stands.
+      The obvious fix ("visible media -> suspend") was measured and rejected:
+      `simonwillison.net` is a 7,974-word article with two visible `<audio>`
+      elements, so presence alone suspends long-form articles. Shipped instead a
+      media-aware density floor (`MEDIA_READING_FLOOR_WORDS = 500`): a page with a
+      player needs real prose to count as readable. YouTube at 291 words suspends;
+      the article at 7,974 still closes.
+      Note `checkIsDirty` is deliberately NOT visibility-gated — a hidden textarea
+      with unsaved content is still unsaved content.
 
 ---
 

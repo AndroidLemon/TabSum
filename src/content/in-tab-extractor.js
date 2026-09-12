@@ -23,6 +23,18 @@
     return elements;
   }
 
+  // A control the user cannot see is not a control the user is using: virtualized
+  // editors park off-screen capture textareas, docs sites ship collapsed menus, and
+  // clipboard shims hide a textarea per code block. The layout engine already knows
+  // which is which, so ask it instead of guessing from value length.
+  function isVisibleControl(el) {
+    try {
+      return el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+    } catch {
+      return el.offsetParent !== null; // checkVisibility landed in Chrome 105
+    }
+  }
+
   // Shared search-input exclusion so the dirty check and the closure
   // classifier agree on what counts as a site search box (not user content).
   const SEARCH_INPUT_NAMES = new Set(['q', 'query', 'search', 's']);
@@ -181,19 +193,25 @@
   //    lives in src/shared/closure-policy.js where a Node test can reach it.
   function collectClosureTelemetry() {
     const candidateInputs = queryAllDeep('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"])')
-      .filter(i => !isSearchInput(i));
+      .filter(i => !isSearchInput(i) && isVisibleControl(i));
     const otherInputs = candidateInputs.filter(i => (i.getAttribute('type') || 'text').toLowerCase() !== 'email');
     const passwordInputs = otherInputs.filter(i => (i.getAttribute('type') || '').toLowerCase() === 'password');
     return {
       inputCounts: {
-        textareas: queryAllDeep('textarea').length,
-        selects: queryAllDeep('select').length,
+        textareas: queryAllDeep('textarea').filter(isVisibleControl).length,
+        selects: queryAllDeep('select').filter(isVisibleControl).length,
         passwords: passwordInputs.length,
         appContainers: queryAllDeep(
           '[role="dialog"], [role="application"], [contenteditable="true"], [role="textbox"], .monaco-editor, .ProseMirror, .ql-editor'
-        ).length,
+        ).filter(isVisibleControl).length,
         otherInputs: otherInputs.length
       },
+      // A page built around a player is not a reading page: its state is playback
+      // position, which the URL does not carry, and a summary of a video's blurb
+      // is a near-useless wiki entry. Presence alone means nothing though — a
+      // long article may embed a podcast player — so the policy pairs this with
+      // a higher density floor rather than treating it as a veto.
+      hasMediaSurface: queryAllDeep('video, audio').some(isVisibleControl),
       urlParts: {
         pathname: window.location.pathname,
         hash: window.location.hash,

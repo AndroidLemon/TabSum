@@ -103,7 +103,15 @@ export function decideSweepAction(tab, ctx = {}) {
  * a one-field login form; both read as a lone "other" input and are allowed to close,
  * since neither has a textarea, select, password field, rich editor, or 3+ text inputs.
  */
-export function classifyClosureSafety({ inputCounts = {}, urlParts = {}, wordCount = 0 } = {}) {
+export const READING_FLOOR_WORDS = 120;
+// A player-dominated page needs real prose before it counts as readable.
+// ponytail: one threshold, calibrated against a YouTube watch page (291 words)
+// and a long article carrying two audio embeds (7,974). Upgrade path if it
+// misfires: compare the player's rendered area against the viewport instead of
+// leaning on word count.
+export const MEDIA_READING_FLOOR_WORDS = 500;
+
+export function classifyClosureSafety({ inputCounts = {}, urlParts = {}, wordCount = 0, hasMediaSurface = false } = {}) {
   const { textareas = 0, selects = 0, passwords = 0, appContainers = 0, otherInputs = 0 } = inputCounts;
   const pathname = String(urlParts.pathname || '').toLowerCase();
   const hash = String(urlParts.hash || '').toLowerCase();
@@ -122,8 +130,11 @@ export function classifyClosureSafety({ inputCounts = {}, urlParts = {}, wordCou
     return { tier: 'suspend_only', reason: 'Complex search/filter query state' };
   }
   // 4. Content density / readability confidence
-  if (wordCount < 120) {
-    return { tier: 'suspend_only', reason: 'Short or low-confidence content' };
+  if (wordCount < (hasMediaSurface ? MEDIA_READING_FLOOR_WORDS : READING_FLOOR_WORDS)) {
+    return {
+      tier: 'suspend_only',
+      reason: hasMediaSurface ? 'Media-dominated page with little prose' : 'Short or low-confidence content'
+    };
   }
   return { tier: 'safe_to_close', reason: 'Pure stateless reading article' };
 }
@@ -192,7 +203,11 @@ export function mergeFrameExtractions(frameResults = []) {
     const frameCounts = frame.result.closureTelemetry?.inputCounts || {};
     for (const key of Object.keys(counts)) counts[key] += frameCounts[key] || 0;
   }
-  merged.closureTelemetry = { ...top.result.closureTelemetry, inputCounts: counts };
+  merged.closureTelemetry = {
+    ...top.result.closureTelemetry,
+    inputCounts: counts,
+    hasMediaSurface: frames.some((frame) => frame.result.closureTelemetry?.hasMediaSurface)
+  };
 
   return merged;
 }
