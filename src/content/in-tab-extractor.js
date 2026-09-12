@@ -65,34 +65,40 @@
     });
   }
 
-  // An editor surface means the tab is a tool, not a document.
+  // Editor surfaces, split by what each consumer can ask of them.
   //
-  // Split deliberately. The first group is structural and will still be true in
-  // 2030: a drawing surface, an ARIA application or textbox, any editable host.
-  // `[contenteditable]` bare rather than `="true"`, because the valueless
-  // attribute form is legal and means the same thing.
+  // TEXT_EDITOR_SELECTOR is shared by the dirty check and the telemetry count.
+  // These hold typed text, so `innerText` is meaningful and an unsaved draft in
+  // one is data loss. The two lists had silently diverged: the dirty check never
+  // learned about CodeMirror or Ace, so a draft in either read as clean.
   //
-  // ponytail: the second group is a list of vendor class names and it rots on a
-  // schedule -- every entry that falls out of fashion is a silently closed tool.
-  // It earns its place anyway: virtualized editors deliberately break semantic
-  // DOM, rendering only visible lines and parking an off-screen capture
-  // textarea, so nothing structural sees them. jsonformatter.org (Ace, 1,137
-  // words) closes under every structural rule there is. Upgrade path when this
-  // bites: score a tool by off-screen-textarea + tall scroll container rather
-  // than by class name.
-  //
-  // [role="dialog"] stays, though not comfortably. Cookie-consent and newsletter
-  // modals use it more often than editors do, and the visibility gate cannot help
-  // because an undismissed banner is visible by definition. Dropping it was tried
-  // and reverted: on the corpus it is inert -- recall and leaks were identical
-  // either way -- so there was no evidence to justify the behaviour change, and
-  // test_hybrid_mode.js asserts an open modal marks an app.
-  // ponytail: if banners start costing recall, the fix is to require the dialog
-  // to contain a control rather than to drop the signal.
-  const EDITOR_SURFACE_SELECTOR = [
-    'canvas', '[role="application"]', '[role="textbox"]', '[role="dialog"]', '[contenteditable]:not([contenteditable="false"])',
-    '.monaco-editor', '.cm-editor', '.CodeMirror', '.ace_editor', '.ProseMirror', '.ql-editor'
+  // ponytail: the vendor half rots on a schedule -- every entry that falls out
+  // of fashion is a silently closed tool. It earns its place because virtualized
+  // editors deliberately break semantic DOM, rendering visible lines only and
+  // parking an off-screen capture textarea, so nothing structural sees them.
+  // Upgrade path when this bites: score a tool by off-screen-textarea + tall
+  // scroll container rather than by class name.
+  const TEXT_EDITOR_SELECTOR = [
+    '[role="textbox"]', '[contenteditable]:not([contenteditable="false"])',
+    '.monaco-editor', '.cm-editor', '.CodeMirror', '.ace_editor',
+    '.ProseMirror', '.ql-editor', '.DraftEditor-root'
   ].join(', ');
+
+  // APP_SURFACE_SELECTOR marks the tab as a tool but holds no typed text, so it
+  // must never reach the dirty check: `innerText` on an open cookie banner would
+  // mark every page carrying one as having unsaved work.
+  //
+  // [role="dialog"] stays, though not comfortably -- consent and newsletter
+  // modals use it more than editors do, and the visibility gate cannot help since
+  // an undismissed banner is visible by definition. Dropping it was tried and
+  // reverted: on the corpus it is inert, so there was no evidence for the change,
+  // and test_hybrid_mode.js asserts an open modal marks an app.
+  // ponytail: if banners start costing recall, require the dialog to contain a
+  // control rather than dropping the signal.
+  const APP_SURFACE_SELECTOR = ['canvas', '[role="application"]', '[role="dialog"]'].join(', ');
+
+  const EDITOR_SURFACE_SELECTOR = `${TEXT_EDITOR_SELECTOR}, ${APP_SURFACE_SELECTOR}`;
+
 
   // A select or toggle only means "data entry" if it sits in a real form. On its
   // own it is a docs version picker, a language switcher, or a CSS disclosure
@@ -153,10 +159,10 @@
       }
     }
 
-    // Check rich-text editors, contenteditables, and modern web app editors
-    const editables = queryAllDeep(
-      '[contenteditable="true"], [role="textbox"], .ProseMirror, .monaco-editor, .ql-editor, .DraftEditor-root'
-    );
+    // Check rich-text editors, contenteditables, and modern web app editors.
+    // Same list the telemetry counts, so an editor that marks the tab a tool can
+    // never be one the zero-loss guard has not heard of.
+    const editables = queryAllDeep(TEXT_EDITOR_SELECTOR);
     for (const el of editables) {
       if (el.innerText && el.innerText.trim().length > 5) {
         return { isDirty: true, reason: 'Unsaved rich-text editor draft detected' };

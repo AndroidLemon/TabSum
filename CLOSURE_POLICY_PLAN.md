@@ -329,7 +329,28 @@ behaviour: the ratio must not move.
 
 **Verify:** `npm run test:ratio` close rate identical to Step 7's number.
 
-- [ ] Done — close rate ____% (must equal Step 7)
+- [x] Done — close recall **88.6%**, leaks **0**, both unchanged as required.
+      All 8 suites green.
+      Filed as cleanup; turned out to be the second data-loss bug of the plan.
+      The two editor lists had silently diverged:
+
+      | selector | dirty check | telemetry |
+      | :--- | :---: | :---: |
+      | `.ace_editor`, `.cm-editor`, `.CodeMirror` | missing | present |
+      | `[contenteditable]` (bare, valueless) | missing | present |
+      | `.DraftEditor-root` | present | missing |
+
+      So an unsaved draft in Ace or CodeMirror 6 read as **clean**. Suspension
+      happened to save it — those classes were in the telemetry list, so the tier
+      came back `suspend_only` — but unsaved work is meant to abort archival
+      entirely, not merely avoid closing. The safety net was a side effect.
+      Split into `TEXT_EDITOR_SELECTOR` (shared: holds typed text, so `innerText`
+      is meaningful) and `APP_SURFACE_SELECTOR` (telemetry only: `canvas`,
+      `[role="application"]`, `[role="dialog"]`). The split is load-bearing —
+      running `innerText` over an open cookie banner would mark every page
+      carrying one as having unsaved work.
+      `/vendor-editor` now asserts `isDirty === true` so the divergence cannot
+      quietly return.
 
 ---
 

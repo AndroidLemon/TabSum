@@ -349,9 +349,9 @@ async function runHardeningTests() {
       { route: '/hidden-controls', tier: 'safe_to_close',
         expect: { textareas: 0, selects: 0 },
         why: 'controls the user cannot see are not controls the user is using' },
-      { route: '/vendor-editor', tier: 'suspend_only',
+      { route: '/vendor-editor', tier: 'suspend_only', dirty: true,
         expect: { appContainers: 1 },
-        why: 'a virtualized editor is visible only through its vendor class' },
+        why: 'a virtualized editor is visible only through its vendor class, and its draft is unsaved work' },
       { route: '/submit-form-select', tier: 'suspend_only',
         expect: { selects: 1 },
         why: 'a select inside a submittable form is real data entry' }
@@ -379,6 +379,12 @@ async function runHardeningTests() {
       assert.strictEqual(
         classifyClosureSafety({ ...caseResult.closureTelemetry, wordCount: caseResult.wordCount }).tier,
         testCase.tier, `${testCase.route} must classify ${testCase.tier}`);
+      if (testCase.dirty !== undefined) {
+        // The dirty check and the telemetry count share one editor list; before
+        // they were reconciled, a draft in Ace or CodeMirror read as clean.
+        assert.strictEqual(caseResult.isDirty, testCase.dirty,
+          `${testCase.route}: isDirty should be ${testCase.dirty} — the zero-loss guard must know every editor the classifier does`);
+      }
       console.log(`✓ ${testCase.route} -> ${testCase.tier} (${testCase.why})`);
       await casePage.close();
     }
