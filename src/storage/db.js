@@ -391,15 +391,16 @@ export async function markStaysSuspended(id, reason) {
   });
 }
 
+const CAPTURE_STATUS = { closed: 'archived', suspended: 'discarded', 'left-open': 'captured' };
+
 /**
  * Save a freshly captured tab. The disposition decides `status` and `closedAt` together, so a
  * caller cannot pair them wrongly. `saveArchivedTab` still takes a raw record because JSON
  * import has to be able to restore any state from a backup.
  */
 export async function recordCapture(payload, disposition) {
-  const status = disposition === 'closed' ? 'archived'
-    : disposition === 'suspended' ? 'discarded'
-    : 'captured';
+  const status = CAPTURE_STATUS[disposition];
+  if (!status) throw new Error(`recordCapture: unknown disposition '${disposition}'`);
   return saveArchivedTab({
     ...payload,
     status,

@@ -43,6 +43,7 @@ const {
   markTabGone,
   markReopened,
   markLeftOpen,
+  markStaysSuspended,
   recordCapture,
   fadeExpiredTabs
 } = await import('../src/storage/db.js');
@@ -223,6 +224,19 @@ assert.strictEqual(asOpen.closedAt, null, "disposition 'left-open' leaves closed
 const reopened = await markReopened(asClosed.id);
 assert.strictEqual(reopened.closedAt, null, 'reopening clears closedAt');
 assert.ok(reopened.restoredAt > 0, 'reopening stamps restoredAt');
+
+// Chrome refused to close a tab we had suspended: it stays suspended, and must land in
+// neither "Closed today" nor the fully-open inbox.
+await saveArchivedTab({ id: 'lc-stuck', url: 'https://lc.example/stuck', status: 'archived', closedAt: Date.now() });
+const stuck = await markStaysSuspended('lc-stuck', 'Chrome refused to close this tab; it stays suspended');
+assert.strictEqual(stuck.status, 'discarded', 'markStaysSuspended puts the record back to suspended');
+assert.strictEqual(stuck.closedAt, null, 'and clears closedAt so it leaves Closed today');
+assert.strictEqual(stuck.closureReason, 'Chrome refused to close this tab; it stays suspended', 'the refusal reason is recorded');
+assert.ok(!(await getArchivedTabs({ closedSince: 1 })).some(t => t.id === 'lc-stuck'), 'a stuck tab is not closed today');
+
+// An unknown disposition must fail at the call site rather than persisting 'captured'
+await assert.rejects(() => recordCapture({ url: 'https://lc.example/typo' }, 'left_open'),
+  /unknown disposition/, 'a mistyped disposition throws instead of silently writing captured');
 console.log('✓ Lifecycle transitions verified');
 
 console.log('Testing inbox views and fading...');
@@ -273,6 +287,12 @@ assert.strictEqual(chipAt(FADE_WARNING_DAYS + 1, 'expiring-soon'), 'Fades in 4d'
 assert.strictEqual(fadeChipLabel({ ...chipNote, isFavorite: true }, fade, 'newest', chipNow), '',
   'starred notes never show a chip');
 assert.strictEqual(fadeChipLabel(chipNote, null, 'newest', chipNow), '', 'no settings means no chip');
+// Regression: getArchivedTabs defaults fadeSettings to null and app.js can pass null when the
+// settings read fails. That must not throw mid-render.
+assert.strictEqual(getExpiry({ capturedAt: chipNow }, null), null, 'null settings means never fades, not a crash');
+assert.strictEqual(getExpiry({ capturedAt: chipNow }, undefined), null, 'undefined settings likewise');
+await assert.doesNotReject(() => getArchivedTabs({ sortBy: 'expiring-soon' }),
+  'the expiring-soon sort survives a missing fadeSettings');
 console.log('✓ Inbox views, fading and expiring-soon sort verified');
 
 // Test 13: JSON import - unknown ids dedupe on URL; field types are coerced

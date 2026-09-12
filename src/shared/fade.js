@@ -16,7 +16,11 @@ export const FADE_WARNING_DAYS = 3;
  * fadeUnopenedDays after capture; reopened notes fadeReopenedDays after the last reopen.
  * Starred notes and a 0-day setting never fade.
  */
-export function getExpiry(record, settings = {}) {
+export function getExpiry(record, settings) {
+  // An absent settings object means we cannot know the windows, so treat the note as
+  // never-fading rather than throwing. `= {}` would not cover this: callers pass an
+  // explicit null (getArchivedTabs' default, and app.js's getSettings().catch(() => null)).
+  if (!settings) return null;
   if (record.isFavorite) return null;
   const days = record.restoredAt ? settings.fadeReopenedDays : settings.fadeUnopenedDays;
   if (!days) return null;
