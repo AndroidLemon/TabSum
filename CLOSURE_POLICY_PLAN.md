@@ -221,7 +221,24 @@ container instead of class names.
 **Verify:** `npm run test:ratio` — `jsonformatter.org` and `regex101.com` both
 `suspend_only`.
 
-- [ ] Done — close rate ____%, leaks ____
+- [x] Done — close recall **77.1%**, leaks **0** (both unchanged). All 8 suites green.
+      The totals held steady but the composition improved: `jsonformatter.org` is
+      now caught structurally via `appContainers=2` at 456 words instead of
+      incidentally, and `canvas` / `.ace_editor` / `.cm-editor` / `.CodeMirror`
+      cost no recall at all — no corpus article was held open by a chart canvas.
+      **Dropping `[role="dialog"]` was tried and reverted.** The reasoning was
+      sound — cookie-consent modals use it far more than editors, and the
+      visibility gate can't help since an undismissed banner is visible by
+      definition — but the corpus measured it *inert*: identical recall, identical
+      leaks either way. An inert signal is not evidence for a behaviour change,
+      and `test_hybrid_mode.js` asserts an open modal marks an app. Restored, with
+      the upgrade path recorded in the code: require the dialog to contain a
+      control rather than drop the signal.
+
+**Known gap, not solved here:** `petstore.swagger.io` is caught only by rule 4
+(102 words) — its "Try it out" controls produce `appContainers=0`. That is
+exactly the Swagger-UI-at-5,000-words case the debate raised. This instance is
+incidentally short; a fuller one would leak.
 
 ---
 

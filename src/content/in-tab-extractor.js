@@ -35,6 +35,35 @@
     }
   }
 
+  // An editor surface means the tab is a tool, not a document.
+  //
+  // Split deliberately. The first group is structural and will still be true in
+  // 2030: a drawing surface, an ARIA application or textbox, any editable host.
+  // `[contenteditable]` bare rather than `="true"`, because the valueless
+  // attribute form is legal and means the same thing.
+  //
+  // ponytail: the second group is a list of vendor class names and it rots on a
+  // schedule -- every entry that falls out of fashion is a silently closed tool.
+  // It earns its place anyway: virtualized editors deliberately break semantic
+  // DOM, rendering only visible lines and parking an off-screen capture
+  // textarea, so nothing structural sees them. jsonformatter.org (Ace, 1,137
+  // words) closes under every structural rule there is. Upgrade path when this
+  // bites: score a tool by off-screen-textarea + tall scroll container rather
+  // than by class name.
+  //
+  // [role="dialog"] stays, though not comfortably. Cookie-consent and newsletter
+  // modals use it more often than editors do, and the visibility gate cannot help
+  // because an undismissed banner is visible by definition. Dropping it was tried
+  // and reverted: on the corpus it is inert -- recall and leaks were identical
+  // either way -- so there was no evidence to justify the behaviour change, and
+  // test_hybrid_mode.js asserts an open modal marks an app.
+  // ponytail: if banners start costing recall, the fix is to require the dialog
+  // to contain a control rather than to drop the signal.
+  const EDITOR_SURFACE_SELECTOR = [
+    'canvas', '[role="application"]', '[role="textbox"]', '[role="dialog"]', '[contenteditable]:not([contenteditable="false"])',
+    '.monaco-editor', '.cm-editor', '.CodeMirror', '.ace_editor', '.ProseMirror', '.ql-editor'
+  ].join(', ');
+
   // A select or toggle only means "data entry" if it sits in a real form. On its
   // own it is a docs version picker, a language switcher, or a CSS disclosure
   // hack driving a menu.
@@ -222,9 +251,7 @@
         textareas: queryAllDeep('textarea').filter(isVisibleControl).length,
         selects: queryAllDeep('select').filter(s => isVisibleControl(s) && isInMeaningfulForm(s)).length,
         passwords: passwordInputs.length,
-        appContainers: queryAllDeep(
-          '[role="dialog"], [role="application"], [contenteditable="true"], [role="textbox"], .monaco-editor, .ProseMirror, .ql-editor'
-        ).filter(isVisibleControl).length,
+        appContainers: queryAllDeep(EDITOR_SURFACE_SELECTOR).filter(isVisibleControl).length,
         otherInputs: otherInputs.length
       },
       // A page built around a player is not a reading page: its state is playback
