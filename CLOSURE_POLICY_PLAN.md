@@ -175,7 +175,27 @@ Checkbox/radio reach the count only via Step 3's toggle path.
 
 **Verify:** `npm run test:policy`, `npm run test:ratio`.
 
-- [ ] Done — close rate ____%, leaks ____
+- [x] **Skipped — measured inert.** A census of every visible, non-search input
+      across the whole corpus found exactly five types:
+
+      | type | count |
+      | :--- | ---: |
+      | checkbox | 54 |
+      | text | 20 |
+      | password | 3 |
+      | radio | 3 |
+      | file | 2 |
+
+      No `color`, `range`, `date`, `url`, `tel`, `number`, `image` anywhere. The
+      checkboxes and radios are already gated by Step 4's meaningful-form test,
+      and `file` is genuine data entry that should count. An allowlist would
+      change zero verdicts.
+      It would also be actively wrong on the case it was meant to catch: a page
+      with three range sliders or colour pickers is a settings panel — a tool —
+      and suspending it is the correct answer, not a false positive.
+      Shipping it would mean maintaining a second rotting list (see Step 6's
+      vendor classes) to buy nothing. Revisit only if a census on a wider corpus
+      turns up junk types actually reaching the `otherInputs >= 3` threshold.
 
 ---
 
