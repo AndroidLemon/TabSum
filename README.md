@@ -273,12 +273,15 @@ Navigate to the TabSum settings by right-clicking the extension icon and selecti
 
 TabSum includes a suite of unit and end-to-end integration tests powered by Node.js and Playwright:
 
-### Run Unit Tests (Instant)
+### Run Unit Tests (Instant, No Browser)
 
-Verifies domain extraction, heuristic summarization, the local-LLM tier (against a mocked server), Markdown/Obsidian export format, the storage layer (soft deletes, dedupe, fading), and multi-attribute sorting:
+Verifies domain extraction, heuristic summarization, the local-LLM tier (against a mocked server), Markdown/Obsidian export format, the storage layer (soft deletes, dedupe, fading), the closure policy (every safety gate, the tier classifier, the AI-summary gate) and multi-attribute sorting:
 
 ```bash
-npm test
+npm run test:unit     # every node-only suite; opens no window
+npm test              # just the core suite
+npm run test:policy   # just the closure policy
+npm run test:storage  # just the storage layer
 ```
 
 ### Run Specialized Playwright Test Suites
@@ -302,6 +305,22 @@ npm run test:wiki
 # Run complete end-to-end browser dogfooding suite
 npm run test:dogfood
 ```
+
+### Run Everything Without a Visible Window
+
+By default the Playwright suites open a real Chrome window, which takes focus. `TABSUM_HEADLESS=1`
+runs them with no window at all:
+
+```bash
+npm run test:browser   # every Playwright suite, headless
+npm run test:all       # test:unit + test:browser
+TABSUM_HEADLESS=1 npm run test:hybrid   # or one suite at a time
+```
+
+Headless needs Playwright's `chromium` channel, because the default headless build is the
+headless *shell*, which cannot load extensions at all. `extensionLaunchOptions()` in
+`tests/helpers/test-extension.js` handles that. If a suite ever behaves differently headless,
+`TABSUM_OFFSCREEN=1` is the fallback: a real window, parked off-screen.
 
 The Playwright suites load a temporary copy of the extension (see `tests/helpers/test-extension.js`) that adds `localhost` and Wikipedia host permissions, so the shipped manifest doesn't need them.
 

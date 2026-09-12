@@ -12,7 +12,7 @@ import { classifyClosureSafety } from '../src/shared/closure-policy.js';
 import { chromium } from '@playwright/test';
 
 const PORT = 8893;
-import { buildTestExtension } from './helpers/test-extension.js';
+import { buildTestExtension, extensionLaunchOptions } from './helpers/test-extension.js';
 
 const EXTENSION_PATH = buildTestExtension();
 const USER_DATA_DIR = path.resolve('./tests/.playwright_user_data_hybrid');
@@ -169,15 +169,8 @@ async function runHybridTests() {
   const server = await createMockServer();
   console.log(`✓ Mock server listening on http://localhost:${PORT}`);
 
-  const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
-    channel: 'chromium',
-    headless: false,
-    args: [
-      `--disable-extensions-except=${EXTENSION_PATH}`,
-      `--load-extension=${EXTENSION_PATH}`,
-      '--no-sandbox'
-    ]
-  });
+  const context = await chromium.launchPersistentContext(USER_DATA_DIR,
+    extensionLaunchOptions(EXTENSION_PATH, ['--no-sandbox']));
 
   let background;
   for (const page of context.backgroundPages()) {

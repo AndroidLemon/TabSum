@@ -8,7 +8,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
-import { buildTestExtension } from './helpers/test-extension.js';
+import { buildTestExtension, extensionLaunchOptions } from './helpers/test-extension.js';
 
 const PORT = 8899;
 const EXTENSION_PATH = buildTestExtension();
@@ -115,13 +115,8 @@ async function runDogfood() {
   let context;
   try {
     // Launch Chromium with the extension loaded
-    context = await chromium.launchPersistentContext(USER_DATA_DIR, {
-      headless: false,
-      args: [
-        `--disable-extensions-except=${EXTENSION_PATH}`,
-        `--load-extension=${EXTENSION_PATH}`
-      ]
-    });
+    context = await chromium.launchPersistentContext(USER_DATA_DIR,
+      extensionLaunchOptions(EXTENSION_PATH, []));
 
     console.log('✓ Chromium launched with TabSum extension loaded');
 

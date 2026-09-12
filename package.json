@@ -11,7 +11,11 @@
     "test:hybrid": "node tests/test_hybrid_mode.js",
     "test:ux": "node tests/test_app_unit.js && node tests/test_app_ux.js",
     "package": "rm -rf dist && mkdir -p dist && zip -rq dist/tabsum-$npm_package_version.zip manifest.json src LICENSE -x '*.DS_Store'",
-    "test:policy": "node tests/test_closure_policy.js"
+    "test:policy": "node tests/test_closure_policy.js",
+    "test:browser": "TABSUM_HEADLESS=1 sh -c 'node tests/test_hybrid_mode.js && node tests/test_app_ux.js && node tests/test_tab_hardening.js && node tests/test_shortcuts.js && node tests/test_wikipedia.js && node tests/dogfood.js'",
+    "test:all": "npm run test:unit && npm run test:browser",
+    "test:storage": "node tests/test_storage.js",
+    "test:unit": "node tests/test_core.js && node tests/test_closure_policy.js && node tests/test_storage.js && node tests/test_app_unit.js"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

@@ -51,3 +51,25 @@ export function buildTestExtension() {
 
   return dir;
 }
+
+/**
+ * Launch options shared by the Playwright suites.
+ *
+ * TABSUM_HEADLESS=1 runs with no visible window. It needs channel 'chromium': Playwright's
+ * default headless build is the headless shell, which cannot load extensions at all, while
+ * the full Chrome binary in new-headless mode can.
+ * TABSUM_OFFSCREEN=1 keeps a real window but parks it off-screen, for the rare case where
+ * headless changes behaviour and you still don't want the window in your face.
+ */
+export function extensionLaunchOptions(extensionPath, extraArgs = []) {
+  const headless = process.env.TABSUM_HEADLESS === '1';
+  const args = [
+    `--disable-extensions-except=${extensionPath}`,
+    `--load-extension=${extensionPath}`,
+    ...extraArgs
+  ];
+  if (!headless && process.env.TABSUM_OFFSCREEN === '1') {
+    args.push('--window-position=-3000,-3000', '--window-size=1280,900');
+  }
+  return headless ? { channel: 'chromium', headless: true, args } : { headless: false, args };
+}

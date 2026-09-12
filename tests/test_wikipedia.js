@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
 
-import { buildTestExtension } from './helpers/test-extension.js';
+import { buildTestExtension, extensionLaunchOptions } from './helpers/test-extension.js';
 
 const EXTENSION_PATH = buildTestExtension();
 const USER_DATA_DIR = path.resolve('./tests/.playwright_user_data_wiki');
@@ -44,15 +44,8 @@ async function runWikipediaMultiTabTest() {
 
   try {
     console.log('🚀 Launching Chromium with TabSum MV3 unpacked extension...');
-    context = await chromium.launchPersistentContext(USER_DATA_DIR, {
-      headless: false,
-      args: [
-        `--disable-extensions-except=${EXTENSION_PATH}`,
-        `--load-extension=${EXTENSION_PATH}`,
-        '--no-first-run',
-        '--disable-blink-features=AutomationControlled'
-      ]
-    });
+    context = await chromium.launchPersistentContext(USER_DATA_DIR,
+      extensionLaunchOptions(EXTENSION_PATH, ['--no-first-run', '--disable-blink-features=AutomationControlled']));
 
     // 1. Locate Extension Service Worker
     let [background] = context.serviceWorkers();
