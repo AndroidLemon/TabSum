@@ -11,7 +11,7 @@ import assert from 'node:assert';
 import { chromium } from '@playwright/test';
 
 const PORT = 8892;
-import { buildTestExtension } from './helpers/test-extension.js';
+import { buildTestExtension, extensionLaunchOptions } from './helpers/test-extension.js';
 
 const EXTENSION_PATH = buildTestExtension();
 const USER_DATA_DIR = path.resolve('./tests/.playwright_user_data_shortcuts');
@@ -55,14 +55,8 @@ async function runShortcutsTests() {
 
   let context;
   try {
-    context = await chromium.launchPersistentContext(USER_DATA_DIR, {
-      headless: false,
-      args: [
-        `--disable-extensions-except=${EXTENSION_PATH}`,
-        `--load-extension=${EXTENSION_PATH}`,
-        '--no-first-run'
-      ]
-    });
+    context = await chromium.launchPersistentContext(USER_DATA_DIR,
+      extensionLaunchOptions(EXTENSION_PATH, ['--no-first-run']));
 
     let [background] = context.serviceWorkers();
     if (!background) {

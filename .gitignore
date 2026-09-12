@@ -3,3 +3,4 @@ tests/.playwright_user_data*
 .DS_Store
 DOGFOOD_REPORT.md
 dist/
+logs/

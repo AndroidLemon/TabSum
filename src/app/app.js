@@ -171,12 +171,14 @@ async function renderFeed(showSkeletons = false) {
   const seq = ++renderSeq;
   if (showSkeletons || feed.children.length === 0) feed.innerHTML = SKELETONS;
 
-  const [tabs, settings] = await Promise.all([
-    // ponytail: newest 200 matches only (search/filters still reach older notes); fading keeps
-    // most libraries under this. Add a "Load more" button if real libraries outgrow it.
-    getArchivedTabs({ ...currentFilters(), sortBy: state.sortBy, limit: 200 }),
-    getSettings().catch(() => null)
-  ]);
+  // Settings first: the 'expiring-soon' sort needs the fade windows, and passing them in
+  // keeps getArchivedTabs free of a hidden settings dependency. One read per render, not two.
+  const settings = await getSettings().catch(() => null);
+  // ponytail: newest 200 matches only (search/filters still reach older notes); fading keeps
+  // most libraries under this. Add a "Load more" button if real libraries outgrow it.
+  const tabs = await getArchivedTabs({
+    ...currentFilters(), sortBy: state.sortBy, limit: 200, fadeSettings: settings
+  });
   if (seq !== renderSeq) return; // a newer render started while this one was loading
   fadeSettings = settings;
   tabsById = new Map(tabs.map(tab => [String(tab.id), tab]));

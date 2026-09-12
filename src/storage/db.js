@@ -2,14 +2,18 @@
  * TabSum - IndexedDB Storage & Local Settings Management
  */
 
+// Storage depends on the closure policy, not the other way round: what counts as an AI
+// summary is a closure rule, and it is enforced here only to stop a JSON import smuggling
+// an unknown source past the AI-only close gate.
+import { AI_SUMMARY_SOURCES } from '../shared/closure-policy.js';
+import { getExpiry } from '../shared/fade.js';
+
 const DB_NAME = 'TabSumDB';
 const DB_VERSION = 2;
 const STORE_NAME = 'archived_tabs';
 const TEXT_STORE = 'tab_text'; // { id, cleanText } kept apart so list/stat queries never deserialize page text
 const MAX_TEXT_CHARS = 50000;
 const DAY_MS = 24 * 60 * 60 * 1000;
-// Summary sources written by an AI tier; anything else counts as 'heuristic'
-export const AI_SUMMARY_SOURCES = new Set(['gemini-api', 'openai-compatible', 'prompt-api']);
 
 let dbPromise = null;
 
@@ -179,14 +183,15 @@ export async function getArchivedTabs(filters = {}) {
     view = '', // 'inbox' (never reopened) | 'reopened' | '' (all)
     includeDeleted = false,
     includeText = false,
-    sortBy = 'newest', // 'newest' | 'oldest' | 'reading-time-asc' | 'reading-time-desc' | 'title-asc' | 'domain'
+    sortBy = 'newest', // 'newest' | 'oldest' | 'reading-time-asc' | 'reading-time-desc' | 'title-asc' | 'domain' | 'expiring-soon'
     limit = 100,
-    offset = 0
+    // Required by sortBy 'expiring-soon'. Passed in rather than read here, so this query
+    // has no hidden dependency on settings.
+    fadeSettings = null
   } = filters;
 
   const normalizedQuery = query.toLowerCase().trim();
   const needsText = Boolean(normalizedQuery) || includeText;
-  const fadeSettings = sortBy === 'expiring-soon' ? await getSettings() : null;
   const todayStart = startOfDay(0);
   const yesterdayStart = startOfDay(1);
   const weekAgo = Date.now() - 7 * DAY_MS;
@@ -224,7 +229,6 @@ export async function getArchivedTabs(filters = {}) {
 
     const matches = [];
     let results = [];
-    let skipped = 0;
 
     const finish = () => {
       results = matches;
@@ -241,7 +245,7 @@ export async function getArchivedTabs(filters = {}) {
           const expiry = (t) => getExpiry(t, fadeSettings) ?? Infinity; // never-fading notes last
           matches.sort((a, b) => (expiry(a) === expiry(b) ? 0 : expiry(a) - expiry(b)));
         }
-        results = matches.slice(offset, offset + limit);
+        results = matches.slice(0, limit);
       }
       if (includeText) {
         const textStore = tx.objectStore(TEXT_STORE);
@@ -255,11 +259,6 @@ export async function getArchivedTabs(filters = {}) {
     const take = (item, cursor) => {
       if (!isCustomSort) {
         // Index-ordered queries stream and stop early once the page is full
-        if (skipped < offset) {
-          skipped++;
-          cursor.continue();
-          return;
-        }
         matches.push(item);
         if (matches.length >= limit) {
           finish();
@@ -337,33 +336,76 @@ async function updateRecord(id, mutate) {
 }
 
 /**
- * Update tab status (e.g. 'restored', 'archived', 'discarded')
+ * Record lifecycle.
+ *
+ * `status`, `closedAt` and `restoredAt` are one state machine with one invariant, so nothing
+ * outside this block writes them: callers name the transition that happened and the
+ * timestamps are derived here. The states:
+ *
+ *   captured   summary saved, tab still fully open (manual archive, or Chrome refused)
+ *   discarded  tab suspended by TabSum, still in the tab strip
+ *   archived   the tab is gone. `closedAt` is set only when TabSum itself closed it, which
+ *              is exactly what "Closed today" counts
+ *   restored   the user reopened it
  */
-export async function updateArchivedTabStatus(id, status, reason) {
-  return updateRecord(id, (record) => {
-    record.status = status;
-    if (reason) record.closureReason = reason;
-    if (status === 'restored') {
-      record.restoredAt = Date.now();
-    }
-    if (status !== 'archived') {
-      record.closedAt = null; // the tab is open again (or never got closed)
-    }
-  });
-}
 
-/**
- * Mark a record as archived because TabSum closed its tab (feeds "Closed today").
- */
-export async function markTabClosed(id) {
+/** TabSum closed the tab itself. Feeds "Closed today". */
+export async function markClosedByTabSum(id) {
   return updateRecord(id, (record) => {
     record.status = 'archived';
     record.closedAt = Date.now();
   });
 }
 
-export async function updateTabStatus(id, status) {
-  return updateArchivedTabStatus(id, status);
+/** The tab is gone but TabSum did not close it, so it must not count as closed today. */
+export async function markTabGone(id) {
+  return updateRecord(id, (record) => {
+    record.status = 'archived';
+  });
+}
+
+/** The user reopened the tab. */
+export async function markReopened(id) {
+  return updateRecord(id, (record) => {
+    record.status = 'restored';
+    record.restoredAt = Date.now();
+    record.closedAt = null;
+  });
+}
+
+/** Chrome refused to close or suspend the tab, so it is still fully open. */
+export async function markLeftOpen(id, reason) {
+  return updateRecord(id, (record) => {
+    record.status = 'captured';
+    record.closedAt = null;
+    if (reason) record.closureReason = reason;
+  });
+}
+
+/** Chrome refused to close a tab TabSum had suspended, so it stays suspended. */
+export async function markStaysSuspended(id, reason) {
+  return updateRecord(id, (record) => {
+    record.status = 'discarded';
+    record.closedAt = null;
+    if (reason) record.closureReason = reason;
+  });
+}
+
+const CAPTURE_STATUS = { closed: 'archived', suspended: 'discarded', 'left-open': 'captured' };
+
+/**
+ * Save a freshly captured tab. The disposition decides `status` and `closedAt` together, so a
+ * caller cannot pair them wrongly. `saveArchivedTab` still takes a raw record because JSON
+ * import has to be able to restore any state from a backup.
+ */
+export async function recordCapture(payload, disposition) {
+  const status = CAPTURE_STATUS[disposition];
+  if (!status) throw new Error(`recordCapture: unknown disposition '${disposition}'`);
+  return saveArchivedTab({
+    ...payload,
+    status,
+    closedAt: disposition === 'closed' ? Date.now() : null
+  });
 }
 
 /**
@@ -385,36 +427,23 @@ export async function restoreDeletedTab(id) {
 }
 
 /**
- * When a note fades (ms timestamp), or null if it never does. Unopened notes fade
- * fadeUnopenedDays after capture; reopened notes fadeReopenedDays after the last reopen.
- * Starred notes and a 0-day setting never fade.
- */
-export function getExpiry(record, settings = {}) {
-  if (record.isFavorite) return null;
-  const days = record.restoredAt ? settings.fadeReopenedDays : settings.fadeUnopenedDays;
-  if (!days) return null;
-  return (record.restoredAt || record.capturedAt) + days * DAY_MS;
-}
-
-/**
- * Delete notes past their fade date. Skips keepIds (records of tabs TabSum suspended that
+ * Tombstone notes past their fade date. Skips keepIds (records of tabs TabSum suspended that
  * are still open): hybrid mode's second tier needs that record to close the tab.
  */
 export async function fadeExpiredTabs(settings, keepIds = new Set()) {
   const db = await getDB();
   const now = Date.now();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction([STORE_NAME, TEXT_STORE], 'readwrite');
-    const textStore = tx.objectStore(TEXT_STORE);
+    const tx = db.transaction(STORE_NAME, 'readwrite');
     let fadedCount = 0;
     tx.objectStore(STORE_NAME).openCursor().onsuccess = (event) => {
       const cursor = event.target.result;
       if (!cursor) return;
       const expiry = getExpiry(cursor.value, settings);
-      // Tombstones are left to purgeDeletedTabs so Undo keeps working
+      // Tombstone, never hard-delete: purgeDeletedTabs clears it an hour later, so a faded
+      // note is restorable in between. Already-tombstoned records are left to that purge.
       if (expiry !== null && expiry <= now && !keepIds.has(cursor.key) && !cursor.value.deletedAt) {
-        cursor.delete();
-        textStore.delete(cursor.key);
+        cursor.update({ ...cursor.value, deletedAt: now });
         fadedCount++;
       }
       cursor.continue();
@@ -627,4 +656,3 @@ export async function clearAllHistory() {
   });
 }
 
-export const clearAllTabs = clearAllHistory;
