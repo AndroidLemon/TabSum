@@ -49,6 +49,24 @@ const TABLE_COMMENTS = [makeWords('cmt0-', 6), makeWords('cmt1-', 6)];
 // wrapping <div> -- the double-counting the leaf/containment rule exists to fix.
 const NESTED_PARAGRAPH = makeWords('nested-', 25);
 
+// Fixtures for the /nested-spans route (adversarial-review fix to isHarvestable
+// -> harvests()): a <p><span><span>...</span></span></p> chain must be counted
+// once via the <p>, not a second time via the outer span's "nobody covers me"
+// answer; a visibility:visible <span> inside a visibility:hidden <p> must still
+// be harvested since coverage now requires the ancestor to itself be rendered;
+// a <figcaption> must be harvested under the new floor-free tag list; and a
+// <p> inside a CLOSED <details> must not be rendered at all.
+const NESTED_SPAN_WORDS = makeWords('nspan-', 12);
+const HIDDEN_P_VISIBLE_SPAN_WORDS = makeWords('vspan-', 10);
+const FIGCAPTION_WORDS = makeWords('figcap-', 6);
+const SUMMARY_CAPTION = 'short cap';
+const CLOSED_DETAILS_WORDS = makeWords('detailshidden-', 8);
+
+// A top-level page's designMode must never be treated as an editor draft --
+// only copy-enabler extensions set it there. A paragraph long enough to be
+// unambiguous prose, not an editor draft.
+const DESIGNMODE_TOP_PARAGRAPH = makeWords('dmtop-', 30);
+
 // Mock server serving test pages for dirty checks and lifecycle testing
 function createMockServer() {
   const server = http.createServer((req, res) => {
@@ -340,6 +358,43 @@ function createMockServer() {
       return;
     }
 
+    // Adversarial-review fix: harvests()'s ancestor-coverage walk must climb
+    // every block ancestor (not just the nearest), and coverage must require
+    // the ancestor to itself pass the harvest (rendered, out of NOISE_SELECTOR).
+    if (req.url === '/nested-spans') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Nested Spans Test</title></head>
+        <body>
+          <article>
+            <p><span><span>${NESTED_SPAN_WORDS}</span></span></p>
+            <p style="visibility:hidden"><span style="visibility:visible">${HIDDEN_P_VISIBLE_SPAN_WORDS}</span></p>
+            <figure><figcaption>${FIGCAPTION_WORDS}</figcaption></figure>
+            <details><summary>${SUMMARY_CAPTION}</summary><p>${CLOSED_DETAILS_WORDS}</p></details>
+          </article>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    // designMode on the TOP document (a copy-enabler extension's doing, not an
+    // editor) must never be treated as an unsaved rich-text draft.
+    if (req.url === '/designmode-top') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Rich Reading Page</title></head>
+        <body>
+          <script>document.designMode = 'on';</script>
+          <main><p>${DESIGNMODE_TOP_PARAGRAPH}</p></main>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
     res.end('<h1>404 Not Found</h1>');
   });
 
@@ -611,6 +666,70 @@ async function runHardeningTests() {
 
     console.log(`✓ /table-prose: wordCount === ${expectedTableWordCount} (short <td> titles harvested, <span> comment counted once via its <td>, nested <p> counted once)`);
     await tableProsePage.close();
+
+    // 4a-4d. Adversarial-review fix: the ancestor-coverage walk in harvests()
+    // must climb every block ancestor (not just the nearest) and must require
+    // the ancestor to itself pass the harvest (rendered, out of NOISE_SELECTOR).
+    const nestedSpansPage = await context.newPage();
+    await nestedSpansPage.goto(`http://localhost:${PORT}/nested-spans`);
+    await nestedSpansPage.waitForLoadState('domcontentloaded');
+
+    const nestedSpansFrames = await background.evaluate(async () => {
+      const tabs = await chrome.tabs.query({});
+      const target = tabs.find(t => t.url.includes('/nested-spans'));
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: target.id, allFrames: true },
+        files: ['src/content/in-tab-extractor.js']
+      });
+      return results.map(r => ({ frameId: r.frameId, result: r.result }));
+    });
+    const nestedSpansResult = mergeFrameExtractions(nestedSpansFrames);
+
+    // WORDS4 (inside a closed <details>) is asserted separately below, not
+    // folded into this expectation, so a surprise there is visible on its own.
+    const expectedNestedSpansWordCount = [NESTED_SPAN_WORDS, HIDDEN_P_VISIBLE_SPAN_WORDS, FIGCAPTION_WORDS, SUMMARY_CAPTION]
+      .join(' ')
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean).length;
+
+    // Verify the assumption the expectation above relies on: a closed <details>
+    // does not render its non-summary children, so checkVisibility must say no.
+    const closedDetailsWordLeaked = nestedSpansResult.cleanText.includes('detailshidden-0');
+    assert.strictEqual(closedDetailsWordLeaked, false,
+      'a <p> inside a CLOSED <details> must not be rendered, so its text must not reach cleanText');
+
+    assert.strictEqual(nestedSpansResult.wordCount, expectedNestedSpansWordCount,
+      `wordCount must equal exactly WORDS + WORDS2 + WORDS3 + "short cap" (${expectedNestedSpansWordCount}), got ${nestedSpansResult.wordCount}`);
+
+    const nestedFirstWordOccurrences = nestedSpansResult.cleanText.split('nspan-0').length - 1;
+    assert.strictEqual(nestedFirstWordOccurrences, 1,
+      '"nspan-0" must appear exactly once — the <p> is harvested, and the outer/inner <span>s must not also contribute');
+
+    console.log(`✓ /nested-spans: wordCount === ${expectedNestedSpansWordCount} (nested spans counted once via the <p>, visible span under a hidden <p> still harvested, figcaption harvested, closed-details text excluded)`);
+    await nestedSpansPage.close();
+
+    // 4a-4e. designMode on the TOP document (set by copy-enabler extensions on
+    // every page) must never be treated as an unsaved editor draft -- only a
+    // SUBFRAME's designMode is, per the adversarial-review fix to checkIsDirty.
+    const designmodeTopPage = await context.newPage();
+    await designmodeTopPage.goto(`http://localhost:${PORT}/designmode-top`);
+    await designmodeTopPage.waitForLoadState('domcontentloaded');
+
+    const designmodeTopCheck = await background.evaluate(async () => {
+      const tabs = await chrome.tabs.query({});
+      const target = tabs.find(t => t.url.includes('/designmode-top'));
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: target.id },
+        files: ['src/content/in-tab-extractor.js']
+      });
+      return results?.[0]?.result;
+    });
+
+    assert.strictEqual(designmodeTopCheck.isDirty, false,
+      'designMode on the top document must not mark the tab dirty -- copy-enabler extensions set it on every page');
+    console.log('✓ /designmode-top: top-document designMode does not trigger isDirty');
+    await designmodeTopPage.close();
 
     // 4a-5. The box test compares against the document origin, not the viewport.
     // Read raw, getBoundingClientRect made every control above the fold look

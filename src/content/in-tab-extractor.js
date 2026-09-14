@@ -203,9 +203,14 @@
     }
 
     // designMode makes the whole document editable rather than a single element,
-    // which is how classic TinyMCE/CKEditor turn an iframe into an editor surface.
+    // which is how classic TinyMCE/CKEditor turn an iframe into an editor
+    // surface -- that iframe is a SUBFRAME, so the check is scoped to one.
+    // Copy-enabler browser extensions set designMode='on' on the TOP document
+    // of every page the user visits (to defeat copy-paste blockers), which
+    // would otherwise mark every tab dirty regardless of what it contains.
     // TEXT_EDITOR_SELECTOR only ever matches elements, so it can never see this.
-    if (document.designMode === 'on' && document.body?.innerText.trim().length > 5) {
+    if (window !== window.top && document.designMode === 'on' &&
+      document.body?.innerText.trim().length > 5) {
       return { isDirty: true, reason: 'Unsaved rich-text editor draft detected' };
     }
 
@@ -287,22 +292,32 @@
   // <span> tags must be harvested as the <p>, not thrown away in favour of its
   // spans — so their containment check ignores span descendants. div/span
   // carry no such meaning, so each is harvested only when it is a true leaf.
-  const SEMANTIC_BLOCK_SELECTOR = 'h1, h2, h3, h4, h5, h6, p, blockquote, li, td, th, dd, dt, div';
+  const SEMANTIC_BLOCK_SELECTOR = 'h1, h2, h3, h4, h5, h6, p, blockquote, li, td, th, dd, dt, div, figcaption, summary';
   const BLOCK_SELECTOR = `${SEMANTIC_BLOCK_SELECTOR}, span`;
-  // td/th/dd/dt/p hold legitimately short content (HN titles, table cells,
-  // definition terms); li/span/div stay floored — they are where nav lists,
-  // inline labels, and layout wrappers produce short noise.
-  const NO_FLOOR_TAGS = new Set(['td', 'th', 'dd', 'dt', 'p']);
+  // td/th/dd/dt/p/figcaption/summary hold legitimately short content (HN
+  // titles, table cells, definition terms, image captions, <details> labels);
+  // li/span/div stay floored — they are where nav lists, inline labels, and
+  // layout wrappers produce short noise.
+  const NO_FLOOR_TAGS = new Set(['td', 'th', 'dd', 'dt', 'p', 'figcaption', 'summary']);
   const BOILERPLATE_REGEX = /^(cookie|privacy policy|terms|sign in|subscribe|all rights reserved)/i;
 
-  // A block is harvested only if (a) it has no harvestable descendant of its
-  // own — ignoring spans for semantic tags, per the comment above — and
-  // (b) no harvestable ANCESTOR already contains it. (b) is what (a) alone
-  // misses: a semantic tag's ignore-spans rule lets e.g. a <td> be harvestable
-  // even though the <span class="commtext"> inside it is *also* a harvestable
-  // leaf on its own — without the ancestor check both would contribute and
-  // double-count the same text. Cached per element since the ancestor walk
-  // revisits shared ancestors for every sibling under them.
+  // A block is harvested only if it is (a) a true leaf — no harvestable
+  // descendant of its own, ignoring spans for semantic tags, per the comment
+  // above — and (b) not COVERED by any harvested block above it. (b) walks
+  // every BLOCK_SELECTOR ancestor up to the article root, not just the
+  // nearest one: a semantic tag's ignore-spans rule lets e.g. a <td> be a
+  // leaf while its own <span class="commtext"> child is *also* a leaf on its
+  // own, so asking only "is my nearest ancestor NOT harvested" answers wrong
+  // for both — the td (correctly harvested) would tell its span "your nearest
+  // ancestor isn't harvestable", and the span would harvest itself too. Both
+  // the td and the span would then contribute, double-counting the same text.
+  // Walking the full ancestor chain and asking "did any of you actually
+  // harvest" fixes it. An ancestor only covers what's inside it when it would
+  // itself pass the harvest — rendered (isVisibleControl) and outside
+  // NOISE_SELECTOR — otherwise a `<p style="visibility:hidden">` would also
+  // swallow a `<span style="visibility:visible">` sitting inside it. Cached
+  // per element since the ancestor walk revisits shared ancestors for every
+  // sibling under them, which keeps the whole pass linear.
   //
   // ponytail: a semantic block disqualified by a nested block loses its OWN
   // preamble text -- nodejs.org's `<li>options <ul>...</ul></li>` drops the
@@ -310,21 +325,27 @@
   // closeable). Upgrade path if that ever matters: harvest the disqualified
   // element's non-block child nodes as one extra fragment.
   const harvestableCache = new WeakMap();
-  function isHarvestable(el) {
+  function harvests(el) {
     if (harvestableCache.has(el)) return harvestableCache.get(el);
     const tag = el.tagName.toLowerCase();
     const hasBlockingDescendant = (tag === 'div' || tag === 'span')
       ? el.querySelector(BLOCK_SELECTOR)
       : el.querySelector(SEMANTIC_BLOCK_SELECTOR);
-    let result;
-    if (hasBlockingDescendant) {
-      result = false;
-    } else {
-      const ancestorBlock = el.parentElement && el.parentElement.closest(BLOCK_SELECTOR);
-      result = !ancestorBlock || !isHarvestable(ancestorBlock);
-    }
+    const result = !el.closest(NOISE_SELECTOR) && isVisibleControl(el) &&
+      !hasBlockingDescendant && !coveredByAncestor(el);
     harvestableCache.set(el, result);
     return result;
+  }
+
+  // Walks every BLOCK_SELECTOR ancestor of el, up to the article root, and
+  // returns true the moment one of them harvests — see the comment above.
+  function coveredByAncestor(el) {
+    let ancestor = el.parentElement && el.parentElement.closest(BLOCK_SELECTOR);
+    while (ancestor) {
+      if (harvests(ancestor)) return true;
+      ancestor = ancestor.parentElement && ancestor.parentElement.closest(BLOCK_SELECTOR);
+    }
+    return false;
   }
 
   // 3. Clean Content Extraction (Readability heuristic)
@@ -346,20 +367,18 @@
     const elements = article.querySelectorAll(BLOCK_SELECTOR);
 
     for (const el of elements) {
-      // Same noise the old clone-and-strip pass removed, checked live instead.
-      if (el.closest(NOISE_SELECTOR)) continue;
-      // Reused from the dirty-check's control-visibility test on purpose: despite
-      // the name, its checks (checkVisibility, then the document-space box) are
-      // exactly what a live prose block needs — skip what display:none or
-      // off-screen parking hides, same as for a control.
-      if (!isVisibleControl(el)) continue;
-      // Leaf/containment rule above — skips a block whose text is already
-      // going to be (or already was) captured by a descendant or an ancestor.
-      if (!isHarvestable(el)) continue;
+      // harvests() folds in the noise check, the visibility check (reused
+      // from the dirty-check's control-visibility test — despite the name,
+      // checkVisibility plus the document-space box is exactly what a live
+      // prose block needs too), the leaf rule, and the ancestor-coverage
+      // rule. See the comment above harvests() for why all four live in one
+      // cached predicate.
+      if (!harvests(el)) continue;
 
       const text = el.innerText ? el.innerText.trim() : '';
       const tag = el.tagName.toLowerCase();
-      const floor = NO_FLOOR_TAGS.has(tag) ? 0 : 20;
+      // A lone "·" bullet cell or single glyph still shouldn't count as a word.
+      const floor = NO_FLOOR_TAGS.has(tag) ? 1 : 20;
       // Exclude very short snippets and navigation boilerplate
       if (text.length > floor && !BOILERPLATE_REGEX.test(text)) {
         blocks.push(text);
@@ -367,7 +386,7 @@
     }
 
     // Nested blocks (li > li, p inside blockquote, div > div > p) no longer
-    // double count: isHarvestable's leaf/containment rule above skips any
+    // double count: harvests()'s leaf/containment rule above skips any
     // element whose text a descendant or an ancestor already contributes, so
     // only the one correct block in each chain reaches here.
     const fullText = blocks.join('\n\n');

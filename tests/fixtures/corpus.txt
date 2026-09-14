@@ -67,6 +67,8 @@ https://jsonformatter.org/
 https://regex101.com/
 https://petstore.swagger.io/
 https://codepen.io/pen/
+# DOM-only game: tiles and score are divs, no input or textarea. Measured: it is caught by appContainers=1 (an app surface on the page), not by rule 4, so it is a weak gate for the rule 4 inversion. A tool with no input, canvas, dialog or application role and over 120 words of chrome is still unrepresented.
+https://play2048.co/
 
 # --- forms and credential entry ---
 https://news.ycombinator.com/login
