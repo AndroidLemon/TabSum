@@ -103,18 +103,31 @@ export function decideSweepAction(tab, ctx = {}) {
  * a one-field login form; both read as a lone "other" input and are allowed to close,
  * since neither has a textarea, select, password field, rich editor, or 3+ text inputs.
  */
-export function classifyClosureSafety({ inputCounts = {}, urlParts = {}, wordCount = 0 } = {}) {
+export const READING_FLOOR_WORDS = 120;
+// A player-dominated page needs real prose before it counts as readable.
+// ponytail: one threshold, calibrated against a YouTube watch page (291 words)
+// and a long article carrying two audio embeds (7,974). Upgrade path if it
+// misfires: compare the player's rendered area against the viewport instead of
+// leaning on word count.
+export const MEDIA_READING_FLOOR_WORDS = 500;
+
+export function classifyClosureSafety({ inputCounts = {}, urlParts = {}, wordCount = 0, hasMediaSurface = false } = {}) {
   const { textareas = 0, selects = 0, passwords = 0, appContainers = 0, otherInputs = 0 } = inputCounts;
   const pathname = String(urlParts.pathname || '').toLowerCase();
   const hash = String(urlParts.hash || '').toLowerCase();
   const search = String(urlParts.search || '').toLowerCase();
+  const hashResolvesToAnchor = Boolean(urlParts.hashResolvesToAnchor);
 
   // 1. Real interactive controls (forms; lone search/email inputs are exempt upstream)
   if (textareas > 0 || selects > 0 || passwords > 0 || appContainers > 0 || otherInputs >= 3) {
     return { tier: 'suspend_only', reason: 'Contains form or interactive input controls' };
   }
   // 2. Stateful URL path or client-side hash routing
-  if (hash.length > 3 || pathname.includes('checkout') || pathname.includes('cart') || pathname.includes('account')) {
+  // A deep link into documentation is not client-side routing: every anchored
+  // docs URL used to land here, and the corpus only scored this rule at zero
+  // because it contained no anchors.
+  if ((hash.length > 3 && !hashResolvesToAnchor) ||
+      pathname.includes('checkout') || pathname.includes('cart') || pathname.includes('account')) {
     return { tier: 'suspend_only', reason: 'Stateful URL path or client-side hash route' };
   }
   // 3. Multi-param search result listings (preserve the user's query state)
@@ -122,8 +135,11 @@ export function classifyClosureSafety({ inputCounts = {}, urlParts = {}, wordCou
     return { tier: 'suspend_only', reason: 'Complex search/filter query state' };
   }
   // 4. Content density / readability confidence
-  if (wordCount < 120) {
-    return { tier: 'suspend_only', reason: 'Short or low-confidence content' };
+  if (wordCount < (hasMediaSurface ? MEDIA_READING_FLOOR_WORDS : READING_FLOOR_WORDS)) {
+    return {
+      tier: 'suspend_only',
+      reason: hasMediaSurface ? 'Media-dominated page with little prose' : 'Short or low-confidence content'
+    };
   }
   return { tier: 'safe_to_close', reason: 'Pure stateless reading article' };
 }
@@ -151,4 +167,67 @@ export function decideClosure({ closureTier, summarySource, settings = {} } = {}
     return { action: 'suspend', reason: 'Suspended instead of closed: no AI summary available' };
   }
   return { action: close ? 'close' : 'suspend', reason: '' };
+}
+
+/**
+ * Collapse one chrome.scripting.executeScript({ allFrames: true }) result set
+ * into a single extraction.
+ *
+ * The top frame owns the tab's identity — url, title, metadata, prose, word
+ * count. Subframes contribute two things only: unsaved work, and controls.
+ *
+ * Dirtiness is a veto and is OR-ed across EVERY frame regardless of size. An
+ * iframe-hosted editor (TinyMCE, CKEditor, the WordPress classic editor) holds
+ * the user's draft in a frame the top document cannot see, and missing it is
+ * the data-loss case this merge exists to close.
+ *
+ * ponytail: control counts skip frames under MIN_COUNTABLE_FRAME_AREA so a 1x1
+ * tracking pixel carrying a hidden form can't suspend every page that embeds
+ * one. Upgrade path if ad frames still distort counts: have the extractor
+ * report whether its frame is same-origin and weight cross-origin frames out.
+ */
+export const MIN_COUNTABLE_FRAME_AREA = 100 * 100;
+
+export function mergeFrameExtractions(frameResults = []) {
+  const frames = (frameResults || [])
+    // Do NOT default a missing frameId to 0. Coercing it would let an entry that
+    // never identified itself win the top-frame lookup below, which is the very
+    // substitution this merge refuses to make.
+    .map((entry) => ({ frameId: entry?.frameId, result: entry?.result }))
+    .filter((frame) => frame.result && frame.result.success);
+  if (!frames.length) return null;
+
+  // The top frame IS the tab. If its injection threw, we have no url, title,
+  // prose or dirty verdict for the page itself - only whatever subframes
+  // survived. Standing an ad frame in for it would archive the wrong content
+  // and, worse, report isDirty=false for a page whose unsaved state was never
+  // read. Both callers treat null as "try again later", which is the honest answer.
+  const top = frames.find((frame) => frame.frameId === 0);
+  if (!top) return null;
+  const merged = { ...top.result };
+
+  const dirty = frames.find((frame) => frame.result.isDirty);
+  merged.isDirty = Boolean(dirty);
+  merged.reason = dirty ? dirty.result.reason : '';
+
+  // One area gate for everything a subframe contributes except dirtiness. A 1x1
+  // ad iframe must not inflate the control counts, and it must not flip
+  // hasMediaSurface either: that raises the reading floor from 120 to 500 words,
+  // so an autoplay pixel would quietly stop ordinary articles from closing.
+  const countable = frames.filter(
+    (frame) => frame === top || (frame.result.frameArea || 0) >= MIN_COUNTABLE_FRAME_AREA
+  );
+
+  const counts = { textareas: 0, selects: 0, passwords: 0, appContainers: 0, otherInputs: 0 };
+  for (const frame of countable) {
+    const frameCounts = frame.result.closureTelemetry?.inputCounts || {};
+    for (const key of Object.keys(counts)) counts[key] += frameCounts[key] || 0;
+  }
+  merged.closureTelemetry = {
+    ...top.result.closureTelemetry,
+    inputCounts: counts,
+    hasMediaSurface: countable.some((frame) => frame.result.closureTelemetry?.hasMediaSurface)
+  };
+
+  return merged;
 }

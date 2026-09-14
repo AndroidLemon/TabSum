@@ -14,6 +14,10 @@ import {
   canCloseWith,
   isScriptableUrl,
   originPatternFor,
+  mergeFrameExtractions,
+  MIN_COUNTABLE_FRAME_AREA,
+  READING_FLOOR_WORDS,
+  MEDIA_READING_FLOOR_WORDS,
   AI_SUMMARY_SOURCES
 } from '../src/shared/closure-policy.js';
 
@@ -138,5 +142,120 @@ console.log('✓ Archive modes and the AI-summary gate verified');
 assert.ok(isScriptableUrl('https://example.com'), 'https is scriptable');
 assert.ok(!isScriptableUrl(''), 'an empty url is not scriptable');
 assert.ok(!isScriptableUrl(null), 'a missing url is not scriptable');
+
+// --- A deep link into docs is not client-side routing ---
+console.log('Testing hash anchor disambiguation...');
+
+const hashTier = (urlParts) => classifyClosureSafety({
+  inputCounts: {}, wordCount: 900, urlParts: { pathname: '/docs/fs', search: '', ...urlParts }
+}).tier;
+
+assert.strictEqual(hashTier({ hash: '#fspromisesreadfile' }), 'suspend_only',
+  'an unresolved hash still reads as a client-side route');
+assert.strictEqual(hashTier({ hash: '#fspromisesreadfile', hashResolvesToAnchor: true }), 'safe_to_close',
+  'but a hash naming a real element is a deep link into prose');
+assert.strictEqual(hashTier({ hash: '#/orders/42' }), 'suspend_only',
+  'SPA route fragments resolve to nothing and still suspend');
+assert.strictEqual(hashTier({ hash: '' }), 'safe_to_close', 'no hash at all is unaffected');
+assert.strictEqual(hashTier({ hash: '#a' }), 'safe_to_close', 'short hashes were always exempt');
+// The path tokens are independent of the anchor escape hatch.
+assert.strictEqual(hashTier({ pathname: '/checkout/step-2', hash: '#top', hashResolvesToAnchor: true }), 'suspend_only',
+  'a resolving anchor never excuses a checkout path');
+console.log('✓ Hash anchor disambiguation verified');
+
+// --- Media-dominated pages need real prose, not just any prose ---
+console.log('Testing media density floor...');
+
+const bare = { inputCounts: {}, urlParts: { pathname: '/', hash: '', search: '' } };
+const densityTier = (over) => classifyClosureSafety({ ...bare, ...over }).tier;
+
+assert.strictEqual(densityTier({ wordCount: 300 }), 'safe_to_close', '300 words with no player reads fine');
+assert.strictEqual(densityTier({ wordCount: 300, hasMediaSurface: true }), 'suspend_only',
+  'a YouTube watch page (291 words behind a player) must not close');
+assert.strictEqual(densityTier({ wordCount: 7974, hasMediaSurface: true }), 'safe_to_close',
+  'but a long article carrying a podcast embed still closes');
+assert.match(classifyClosureSafety({ ...bare, wordCount: 300, hasMediaSurface: true }).reason, /Media-dominated/,
+  'and says which floor it hit, so the report can tell the two apart');
+assert.strictEqual(densityTier({ wordCount: READING_FLOOR_WORDS - 1 }), 'suspend_only', 'the plain floor is exclusive');
+assert.strictEqual(densityTier({ wordCount: MEDIA_READING_FLOOR_WORDS, hasMediaSurface: true }), 'safe_to_close',
+  'and so is the media floor');
+console.log('✓ Media density floor verified');
+
+// --- Frame merging: the zero-loss guard must see into iframes ---
+console.log('Testing frame merge...');
+
+const BIG = MIN_COUNTABLE_FRAME_AREA;
+const frame = (frameId, over = {}) => ({
+  frameId,
+  result: {
+    success: true, isDirty: false, reason: '', url: `https://x/${frameId}`, title: `t${frameId}`,
+    wordCount: 500, frameArea: BIG,
+    closureTelemetry: { inputCounts: { textareas: 0, selects: 0, passwords: 0, appContainers: 0, otherInputs: 0 }, urlParts: { pathname: '/', hash: '', search: '' } },
+    ...over
+  }
+});
+
+assert.strictEqual(mergeFrameExtractions([]), null, 'no frames means no extraction');
+assert.strictEqual(mergeFrameExtractions([{ frameId: 0, result: undefined }]), null, 'a frame that threw is not an extraction');
+assert.strictEqual(mergeFrameExtractions([{ frameId: 0, result: { success: false } }]), null, 'an unsuccessful frame is not an extraction');
+
+// This is the bug the step exists to fix: the editor is in the subframe.
+const tinymce = mergeFrameExtractions([
+  frame(0, { title: 'An Editor' }),
+  frame(7, { isDirty: true, reason: 'Unsaved rich-text editor draft detected', title: 'about:blank' })
+]);
+assert.strictEqual(tinymce.isDirty, true, 'a dirty subframe makes the whole tab dirty');
+assert.match(tinymce.reason, /rich-text/, 'and carries that frame\'s reason');
+assert.strictEqual(tinymce.title, 'An Editor', 'while identity still comes from the top frame');
+
+assert.strictEqual(mergeFrameExtractions([frame(0), frame(7)]).isDirty, false, 'all-clean frames stay clean');
+
+// An embedded player lives in a subframe, so the flag has to survive the merge.
+assert.strictEqual(
+  mergeFrameExtractions([frame(0), frame(7, { closureTelemetry: { inputCounts: {}, urlParts: {}, hasMediaSurface: true } })])
+    .closureTelemetry.hasMediaSurface,
+  true, 'a player in any frame marks the tab as carrying media');
+
+// Identity never comes from a subframe, even when the top frame is listed second.
+const reordered = mergeFrameExtractions([frame(9, { title: 'ad', url: 'https://ads/x' }), frame(0, { title: 'real' })]);
+assert.strictEqual(reordered.title, 'real', 'the top frame wins regardless of result order');
+assert.strictEqual(
+  mergeFrameExtractions([frame(4, { title: 'only' })]), null,
+  'a surviving subframe never stands in for a top frame that failed');
+assert.strictEqual(
+  mergeFrameExtractions([{ frameId: 0, result: { success: false } }, frame(7, { isDirty: true, reason: 'draft' })]), null,
+  'a failed top frame is unusable even when a subframe reports unsaved work');
+assert.strictEqual(
+  mergeFrameExtractions([{ result: { success: true, title: 'nameless', closureTelemetry: {} } }]), null,
+  'an entry that never said which frame it was cannot be promoted to top frame');
+
+// Controls are summed so a framed form still counts...
+const counted = mergeFrameExtractions([
+  frame(0, { closureTelemetry: { inputCounts: { textareas: 1, selects: 0, passwords: 0, appContainers: 0, otherInputs: 2 }, urlParts: { pathname: '/', hash: '', search: '' } } }),
+  frame(7, { closureTelemetry: { inputCounts: { textareas: 0, selects: 2, passwords: 1, appContainers: 0, otherInputs: 3 }, urlParts: {} } })
+]);
+assert.deepStrictEqual(counted.closureTelemetry.inputCounts,
+  { textareas: 1, selects: 2, passwords: 1, appContainers: 0, otherInputs: 5 }, 'control counts sum across frames');
+
+// ...but a tracking pixel cannot suspend every page that embeds one.
+const pixel = mergeFrameExtractions([
+  frame(0),
+  frame(7, { frameArea: 1, closureTelemetry: { inputCounts: { textareas: 9, selects: 9, passwords: 9, appContainers: 9, otherInputs: 9 }, urlParts: {} } })
+]);
+assert.deepStrictEqual(pixel.closureTelemetry.inputCounts,
+  { textareas: 0, selects: 0, passwords: 0, appContainers: 0, otherInputs: 0 }, 'a sub-threshold frame contributes no controls');
+// The same gate has to cover media, or an autoplay pixel raises the reading floor
+// from 120 to 500 words and quietly stops ordinary articles from closing.
+assert.strictEqual(
+  mergeFrameExtractions([
+    frame(0),
+    frame(7, { frameArea: 1, closureTelemetry: { inputCounts: {}, urlParts: {}, hasMediaSurface: true } })
+  ]).closureTelemetry.hasMediaSurface,
+  false, 'nor does it make the tab media-dominated');
+assert.strictEqual(
+  mergeFrameExtractions([frame(0), frame(7, { frameArea: 1, isDirty: true, reason: 'Unsaved form input detected' })]).isDirty,
+  true, 'but a tiny frame can still veto on dirtiness — size never gates safety');
+
+console.log('✓ Frame merge and iframe dirty propagation verified');
 
 console.log('--- Closure Policy Tests Passed Successfully! ---');

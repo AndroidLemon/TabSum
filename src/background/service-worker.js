@@ -23,6 +23,7 @@ import { summarizeContent } from '../ai/summarizer.js';
 import {
   decideSweepAction,
   classifyClosureSafety,
+  mergeFrameExtractions,
   decideClosure,
   canCloseWith,
   isScriptableUrl
@@ -422,13 +423,15 @@ async function closeDiscardedTab(tab, recordId, settings) {
 async function processTabArchival(tab, settings, lastActiveTime) {
   try {
     // 1. Inject in-tab content extractor
+    // allFrames: the zero-loss guard is blind to iframe-hosted editors otherwise —
+    // a TinyMCE/CKEditor draft lives in a frame the top document cannot reach.
     const results = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
+      target: { tabId: tab.id, allFrames: true },
       files: ['src/content/in-tab-extractor.js']
     });
 
     // 2. Skip empty extractions and tabs with unsaved work; look again after another full timeout
-    const extracted = results?.[0]?.result;
+    const extracted = mergeFrameExtractions(results);
     if (!extracted) {
       console.warn(`[TabSum] Extraction returned empty for tab ${tab.id} (${tab.url})`);
       await setTimestamp(tab.id, Date.now());
@@ -555,11 +558,11 @@ async function archiveActiveTab(activeTab) {
 
   // Extract and archive immediately
   const results = await chrome.scripting.executeScript({
-    target: { tabId: activeTab.id },
+    target: { tabId: activeTab.id, allFrames: true },
     files: ['src/content/in-tab-extractor.js']
   });
 
-  const extracted = results?.[0]?.result;
+  const extracted = mergeFrameExtractions(results);
   if (!extracted) {
     return { success: false, error: 'Could not extract content from this page' };
   }

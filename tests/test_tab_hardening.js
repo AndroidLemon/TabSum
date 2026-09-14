@@ -10,6 +10,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import assert from 'node:assert';
 import { chromium } from '@playwright/test';
+import { mergeFrameExtractions, classifyClosureSafety } from '../src/shared/closure-policy.js';
 
 const PORT = 8891;
 import { buildTestExtension, extensionLaunchOptions } from './helpers/test-extension.js';
@@ -88,6 +89,140 @@ function createMockServer() {
           <div role="textbox" aria-multiline="true">
             Fixing the memory leak in the transaction manager component.
           </div>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    // The iframe-hosted editor case: the draft lives in a frame the top
+    // document cannot reach, so a top-frame-only injection reports isDirty=false.
+    if (req.url === '/framed-editor') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>CMS Compose</title></head>
+        <body>
+          <h1>Edit Post</h1>
+          <iframe src="/framed-editor-inner" width="600" height="400"></iframe>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    if (req.url === '/framed-editor-inner') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <body>
+          <textarea id="draft"></textarea>
+          <script>document.getElementById('draft').value = 'Half-written post the user has not saved yet.';</script>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    // Step 4's intent, from the other side: a long article whose only controls
+    // are a docs version picker and a CSS-hack menu toggle, neither in a form.
+    if (req.url === '/orphan-picker') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>API Reference</title></head>
+        <body>
+          <nav>
+            <input type="checkbox" id="menu-toggle"><label for="menu-toggle">Menu</label>
+            <select id="version"><option>v3.12</option><option>v3.11</option></select>
+          </nav>
+          <main><h1>Reference</h1><p>${'The reference describes every parameter in detail. '.repeat(40)}</p></main>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    // Controls the user cannot see: a display:none draft box and the off-screen
+    // capture textarea every virtualized editor and clipboard shim parks in the DOM.
+    if (req.url === '/hidden-controls') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Long Read</title></head>
+        <body>
+          <main><h1>Essay</h1><p>${'Prose that the reader came here to read. '.repeat(50)}</p></main>
+          <textarea style="display:none"></textarea>
+          <textarea style="position:absolute;left:-9999px;top:-9999px"></textarea>
+          <select style="visibility:hidden"><option>a</option></select>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    // A virtualized editor: no semantic signal at all, only a vendor class.
+    if (req.url === '/vendor-editor') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>JSON Tool</title></head>
+        <body>
+          <h1>Formatter</h1>
+          <p>${'Paste your document below to reformat it. '.repeat(40)}</p>
+          <div class="ace_editor" style="width:600px;height:300px">editor surface</div>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    // A select that IS data entry: it sits in a form with a submit button.
+    if (req.url === '/submit-form-select') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Order Options</title></head>
+        <body>
+          <p>${'Choose your configuration before continuing. '.repeat(40)}</p>
+          <form>
+            <select name="size"><option>S</option><option>M</option></select>
+            <button type="submit">Continue</button>
+          </form>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    // An editor at the top of a long page. The reader scrolls down to read; the
+    // editor leaves the viewport but not the page, and must still be counted.
+    if (req.url === '/scrolled-editor') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Notebook</title></head>
+        <body>
+          <div class="cm-editor" style="width:600px;height:300px">notebook cell the user was typing in</div>
+          <textarea style="position:fixed;top:-9999px;left:0;width:200px;height:40px"></textarea>
+          <main><p>${'Prose that goes on well past the fold so the page actually scrolls. '.repeat(200)}</p></main>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    // #search must not "resolve" against <input name="search">, but a real
+    // <a name="..."> anchor still has to.
+    if (req.url.startsWith('/hash-names')) {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Handbook</title></head>
+        <body>
+          <input type="text" name="search" placeholder="Search">
+          <a name="deep-link"></a>
+          <main><p>${'The handbook explains each setting in turn. '.repeat(60)}</p></main>
         </body>
         </html>
       `);
@@ -183,6 +318,164 @@ async function runHardeningTests() {
     assert.strictEqual(richCheck.isDirty, true, 'ProseMirror rich editor draft must trigger isDirty');
     console.log(`✓ Rich editor detected: reason = "${richCheck.reason}"`);
     await richPage.close();
+
+    // 4a-2. Editor inside an iframe — requires allFrames injection + frame merge
+    const framedPage = await context.newPage();
+    await framedPage.goto(`http://localhost:${PORT}/framed-editor`);
+    await framedPage.waitForLoadState('domcontentloaded');
+    await framedPage.waitForTimeout(500);
+
+    // The worker can't dynamic-import (banned on ServiceWorkerGlobalScope), so it
+    // hands back the raw per-frame results and the pure merge runs here in Node.
+    const framedCheck = await background.evaluate(async () => {
+      const tabs = await chrome.tabs.query({});
+      const target = tabs.find(t => t.url.includes('/framed-editor'));
+      const topOnly = await chrome.scripting.executeScript({
+        target: { tabId: target.id },
+        files: ['src/content/in-tab-extractor.js']
+      });
+      const allFrames = await chrome.scripting.executeScript({
+        target: { tabId: target.id, allFrames: true },
+        files: ['src/content/in-tab-extractor.js']
+      });
+      return { topOnlyDirty: topOnly?.[0]?.result?.isDirty, allFrames };
+    });
+
+    const framedMerged = mergeFrameExtractions(framedCheck.allFrames);
+    assert.ok(framedCheck.allFrames.length >= 2, 'allFrames must reach the subframe');
+    assert.strictEqual(framedCheck.topOnlyDirty, false,
+      'top-frame-only injection is blind to the framed draft (this is the bug)');
+    assert.strictEqual(framedMerged.isDirty, true,
+      'merged extraction must see the unsaved draft inside the iframe');
+    assert.strictEqual(framedMerged.title, 'CMS Compose',
+      'and identity must still come from the top frame');
+    console.log(`✓ Framed editor detected across ${framedCheck.allFrames.length} frames: reason = "${framedMerged.reason}"`);
+    await framedPage.close();
+
+    // 4a-3. Orphan picker: a version <select> and a menu checkbox outside any
+    // form are site chrome, and must not hold a long article open.
+    const orphanPage = await context.newPage();
+    await orphanPage.goto(`http://localhost:${PORT}/orphan-picker`);
+    await orphanPage.waitForLoadState('domcontentloaded');
+
+    const orphanCheck = await background.evaluate(async () => {
+      const tabs = await chrome.tabs.query({});
+      const target = tabs.find(t => t.url.includes('/orphan-picker'));
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: target.id, allFrames: true },
+        files: ['src/content/in-tab-extractor.js']
+      });
+      return results?.[0]?.result;
+    });
+
+    assert.strictEqual(orphanCheck.closureTelemetry.inputCounts.selects, 0,
+      'a version picker outside a form is chrome, not data entry');
+    assert.strictEqual(orphanCheck.closureTelemetry.inputCounts.otherInputs, 0,
+      'a menu checkbox outside a form is chrome, not data entry');
+    assert.strictEqual(
+      classifyClosureSafety({ ...orphanCheck.closureTelemetry, wordCount: orphanCheck.wordCount }).tier,
+      'safe_to_close', 'so the article underneath them stays closeable');
+    console.log(`✓ Orphan picker ignored: article with ${orphanCheck.wordCount} words stays closeable`);
+    await orphanPage.close();
+
+    // 4a-4. Table-driven coverage for the telemetry rules added in Steps 3-6.
+    const telemetryCases = [
+      { route: '/hidden-controls', tier: 'safe_to_close',
+        expect: { textareas: 0, selects: 0 },
+        why: 'controls the user cannot see are not controls the user is using' },
+      { route: '/vendor-editor', tier: 'suspend_only', dirty: true,
+        expect: { appContainers: 1 },
+        why: 'a virtualized editor is visible only through its vendor class, and its draft is unsaved work' },
+      { route: '/submit-form-select', tier: 'suspend_only',
+        expect: { selects: 1 },
+        why: 'a select inside a submittable form is real data entry' }
+    ];
+
+    for (const testCase of telemetryCases) {
+      const casePage = await context.newPage();
+      await casePage.goto(`http://localhost:${PORT}${testCase.route}`);
+      await casePage.waitForLoadState('domcontentloaded');
+
+      const caseResult = await background.evaluate(async (route) => {
+        const tabs = await chrome.tabs.query({});
+        const target = tabs.find(t => t.url.includes(route));
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: target.id, allFrames: true },
+          files: ['src/content/in-tab-extractor.js']
+        });
+        return results?.[0]?.result;
+      }, testCase.route);
+
+      for (const [key, want] of Object.entries(testCase.expect)) {
+        assert.strictEqual(caseResult.closureTelemetry.inputCounts[key], want,
+          `${testCase.route}: ${key} should be ${want} — ${testCase.why}`);
+      }
+      assert.strictEqual(
+        classifyClosureSafety({ ...caseResult.closureTelemetry, wordCount: caseResult.wordCount }).tier,
+        testCase.tier, `${testCase.route} must classify ${testCase.tier}`);
+      if (testCase.dirty !== undefined) {
+        // The dirty check and the telemetry count share one editor list; before
+        // they were reconciled, a draft in Ace or CodeMirror read as clean.
+        assert.strictEqual(caseResult.isDirty, testCase.dirty,
+          `${testCase.route}: isDirty should be ${testCase.dirty} — the zero-loss guard must know every editor the classifier does`);
+      }
+      console.log(`✓ ${testCase.route} -> ${testCase.tier} (${testCase.why})`);
+      await casePage.close();
+    }
+
+    // 4a-5. The box test compares against the document origin, not the viewport.
+    // Read raw, getBoundingClientRect made every control above the fold look
+    // off-screen, so any page the reader had scrolled reported zero controls.
+    const readAfterScroll = async (route, scrollTo) => {
+      const p = await context.newPage();
+      await p.goto(`http://localhost:${PORT}${route}`);
+      await p.waitForLoadState('domcontentloaded');
+      if (scrollTo) await p.evaluate((y) => window.scrollTo(0, y), scrollTo);
+      const out = await background.evaluate(async (r) => {
+        const tabs = await chrome.tabs.query({});
+        const target = tabs.find(t => t.url.includes(r));
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: target.id, allFrames: true },
+          files: ['src/content/in-tab-extractor.js']
+        });
+        return results?.[0]?.result;
+      }, route.split('#')[0]);
+      await p.close();
+      return out;
+    };
+
+    const unscrolled = await readAfterScroll('/scrolled-editor', 0);
+    const scrolled = await readAfterScroll('/scrolled-editor', 4000);
+    assert.strictEqual(unscrolled.closureTelemetry.inputCounts.appContainers, 1,
+      'the editor is counted before the reader scrolls');
+    assert.strictEqual(scrolled.closureTelemetry.inputCounts.appContainers, 1,
+      'and is still counted once it has been scrolled past — it left the viewport, not the page');
+    assert.strictEqual(
+      classifyClosureSafety({ ...scrolled.closureTelemetry, wordCount: scrolled.wordCount }).tier,
+      'suspend_only', 'so a scrolled page holding an editor is never handed to the closer');
+    // The mirror of that bug: a position:fixed element's rect is viewport-relative
+    // by definition and does not move with scroll, so adding the scroll offset
+    // would rescue a toolbar genuinely parked at top:-9999px on any long page.
+    assert.strictEqual(unscrolled.closureTelemetry.inputCounts.textareas, 0,
+      'a fixed control parked off-screen is not counted');
+    assert.strictEqual(scrolled.closureTelemetry.inputCounts.textareas, 0,
+      'and scrolling does not rescue it — fixed elements do not move with scroll');
+    console.log('✓ Scrolled-past editor still counted; parked fixed control still is not');
+
+    // 4a-6. A hash resolves against real anchors only, never a form control name.
+    const collide = await readAfterScroll('/hash-names#search', 0);
+    const realAnchor = await readAfterScroll('/hash-names#deep-link', 0);
+    assert.strictEqual(collide.closureTelemetry.urlParts.hashResolvesToAnchor, false,
+      '#search must not resolve against <input name="search">');
+    assert.strictEqual(realAnchor.closureTelemetry.urlParts.hashResolvesToAnchor, true,
+      'but a genuine <a name="deep-link"> still resolves');
+    assert.strictEqual(
+      classifyClosureSafety({ ...collide.closureTelemetry, wordCount: collide.wordCount }).tier,
+      'suspend_only', 'so an SPA route keeps its page');
+    assert.strictEqual(
+      classifyClosureSafety({ ...realAnchor.closureTelemetry, wordCount: realAnchor.wordCount }).tier,
+      'safe_to_close', 'while a deep-linked handbook still closes');
+    console.log('✓ Hash resolution ignores form-control names, honours real anchors');
 
     // 4b. Shadow DOM Form Input
     const shadowPage = await context.newPage();

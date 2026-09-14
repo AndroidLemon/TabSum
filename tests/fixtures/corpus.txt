@@ -1,0 +1,90 @@
+# Closure-ratio corpus. One URL per line; blank lines and # comments ignored.
+#
+# `# expect: close`   — a reading page. Held open = the auto-close thesis failing.
+# `# expect: suspend` — a tool, form or app. Closed = DATA LOSS. This is the gate.
+# A marker applies to every URL beneath it until the next marker.
+#
+# The ratio alone is a metric that cannot detect data loss: it is maximized by
+# deleting rule 1. The `expect: suspend` block is the counter-weight. Never
+# "fix" a leak by moving a URL out of it.
+
+# expect: close
+
+# --- reference / docs ---
+https://developer.mozilla.org/en-US/docs/Web/API/fetch
+https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise
+https://developer.mozilla.org/en-US/docs/Web/CSS/grid-template-areas
+https://nodejs.org/docs/latest/api/fs.html
+https://playwright.dev/docs/api/class-page
+https://developer.chrome.com/docs/extensions/reference/api/scripting
+https://developer.chrome.com/docs/extensions/reference/api/tabs
+https://www.sqlite.org/lang_select.html
+https://pkg.go.dev/net/http
+https://docs.python.org/3/library/asyncio-task.html
+
+# --- deep-linked docs: rule 2's `hash.length > 3` suspends all of these today.
+# --- The baseline scored rule 2 at zero only because the corpus had no anchors.
+https://nodejs.org/docs/latest/api/fs.html#fspromisesreadfilepath-options
+https://developer.mozilla.org/en-US/docs/Web/API/fetch#syntax
+https://docs.python.org/3/library/asyncio-task.html#creating-tasks
+https://developer.mozilla.org/en-US/docs/Web/CSS/grid-template-areas#examples
+
+# --- long-form articles / blogs ---
+https://en.wikipedia.org/wiki/Tab_(interface)
+https://en.wikipedia.org/wiki/Readability
+https://en.wikipedia.org/wiki/IndexedDB
+https://danluu.com/deconstruct-files/
+https://jvns.ca/blog/2022/04/12/a-list-of-new-ish--command-line-tools/
+https://martinfowler.com/articles/patterns-of-distributed-systems/
+https://overreacted.io/a-complete-guide-to-useeffect/
+https://simonwillison.net/2024/Dec/31/llms-in-2024/
+
+# --- news ---
+https://text.npr.org/
+https://lite.cnn.com/
+https://www.bbc.com/news
+https://arstechnica.com/gadgets/
+https://apnews.com/hub/technology
+
+# --- forums / threaded discussion ---
+https://news.ycombinator.com/item?id=1
+https://news.ycombinator.com/news
+https://lobste.rs/
+
+# --- code hosting: read-only views ---
+https://github.com/microsoft/playwright/issues/1234
+https://github.com/nodejs/node/pull/50000
+https://github.com/microsoft/playwright/blob/main/README.md
+https://github.com/torvalds/linux
+https://gitlab.com/gitlab-org/gitlab
+
+# expect: suspend
+
+# --- genuine tools: closing these destroys the user's workspace ---
+https://excalidraw.com/
+https://app.diagrams.net/
+https://jsonformatter.org/
+https://regex101.com/
+https://petstore.swagger.io/
+https://codepen.io/pen/
+
+# --- forms and credential entry ---
+https://news.ycombinator.com/login
+https://the-internet.herokuapp.com/login
+https://demoqa.com/automation-practice-form
+
+# --- iframe-hosted editors: invisible to the extractor today (plan Step 2) ---
+https://the-internet.herokuapp.com/tinymce
+
+# --- commerce / account-shaped paths ---
+https://www.amazon.com/gp/cart/view.html
+https://www.etsy.com/cart
+
+# --- search / filtered listings: exploratory session state ---
+https://duckduckgo.com/?q=chrome+extension+tab+discard&ia=web
+https://www.google.com/search?q=playwright+headless+extension&num=20
+https://github.com/search?q=tab+suspender&type=repositories
+https://pypi.org/search/?q=readability
+
+# --- media ---
+https://www.youtube.com/watch?v=dQw4w9WgXcQ
