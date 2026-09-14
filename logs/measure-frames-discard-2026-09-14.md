@@ -269,3 +269,23 @@ mocks this call out instead of exercising it for real.
    Mesa/llvmpipe stack instead of this sandbox's SwiftShader path) than is
    available here, or a manual/headed run on the user's own machine outside
    this sandbox.
+
+### M2 addendum — two further attempts, same crash
+
+- `TABSUM_CHANNEL=chrome` (installed Google Chrome, hardware GPU): the branded
+  build no longer loads unpacked extensions from the command line, so the
+  service worker never appeared. Not a route.
+- `TABSUM_METAL=1` (Playwright Chromium, headed off-screen, `--use-angle=metal
+  --ignore-gpu-blocklist`): identical SIGSEGV on `chrome.tabs.discard()`.
+
+Five configurations, one crash address. This is a Playwright-Chromium-on-macOS
+problem, not a GPU one, and no further harness retry will change it.
+
+**Manual check (one minute, in the user's own Chrome):** load the extension
+unpacked via chrome://extensions, run `node tests/measure/discard_state.js`
+just for its mock server (or open any page with a form), type into a text
+input, a textarea and a contenteditable, open chrome://discards and discard
+that tab, click the tab, and see which of the three values survived. Record
+the answer here. Until then the soft-discard path in `service-worker.js` is
+assumed to be able to lose contenteditable state, because Chrome's page-state
+restore covers form controls and not arbitrary DOM.

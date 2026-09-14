@@ -157,9 +157,14 @@ async function main() {
 
   const extraArgs = process.env.TABSUM_NO_GPU === '1'
     ? ['--no-first-run', '--disable-gpu', '--disable-software-rasterizer', '--disable-gpu-compositing']
-    : ['--no-first-run'];
-  const context = await chromium.launchPersistentContext(userDataDir,
-    extensionLaunchOptions(extensionPath, extraArgs));
+    : process.env.TABSUM_METAL === '1'
+      ? ['--no-first-run', '--use-angle=metal', '--ignore-gpu-blocklist', '--enable-gpu-rasterization']
+      : ['--no-first-run'];
+  const launchOpts = extensionLaunchOptions(extensionPath, extraArgs);
+  // TABSUM_CHANNEL=chrome: the installed Google Chrome has a hardware GPU path,
+  // which sidesteps the SwiftShader compositor segfault on discard().
+  if (process.env.TABSUM_CHANNEL) launchOpts.channel = process.env.TABSUM_CHANNEL;
+  const context = await chromium.launchPersistentContext(userDataDir, launchOpts);
   try {
     let [background] = context.serviceWorkers();
     if (!background) background = await context.waitForEvent('serviceworker', { timeout: 10000 });
