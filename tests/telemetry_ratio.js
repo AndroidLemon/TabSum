@@ -17,7 +17,7 @@
  * (same trick as tests/test_hybrid_mode.js:198). bypassCSP mirrors the isolated
  * world the real executeScript injection gets, which page CSP does not govern.
  *
- * Usage: node tests/telemetry_ratio.js [--corpus path] [--floor 0.77]
+ * Usage: node tests/telemetry_ratio.js [--corpus path] [--floor 0.80]
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -31,15 +31,16 @@ const argOf = (flag, fallback) => {
 };
 
 const CORPUS = path.resolve(argOf('--corpus', './tests/fixtures/corpus.txt'));
-// 0.77 against a measured 82.9% (29 of 35), holding the same two-pages-of-drift
-// tolerance the old floor had. The threshold moved because the METRIC changed,
+// 0.80 against a measured 85.7% (30 of 35) after EXTRACTION_PLAN.md Step 3,
+// holding the same two-pages-of-drift tolerance (ADR 0001). Before that, 0.77
+// against 82.9%: that threshold moved because the METRIC changed,
 // not because the policy got worse: recall now scores what actually ships
 // (safe_to_close AND not dirty), and pkg.go.dev — tiered closeable but reporting
 // an unsaved textarea on every load — stopped counting as a close it never was.
 // Corpus URLs are bot-blocked headless (403/429/503) and the reachable set shifts
 // run to run, so the denominator itself moves. The leak gate below is the hard
 // one, and it has no tolerance.
-const CLOSE_RATE_FLOOR = Number(argOf('--floor', '0.77'));
+const CLOSE_RATE_FLOOR = Number(argOf('--floor', '0.80'));
 const CONCURRENCY = 5;
 const NAV_TIMEOUT_MS = 25000;
 const SETTLE_MS = 1500; // let client-side routers paint before reading the DOM
