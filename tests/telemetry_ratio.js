@@ -105,6 +105,22 @@ async function measure(context, { url, expect }) {
     // Same bridge the service worker uses (service-worker.js:461): wordCount is a
     // sibling of closureTelemetry, not inside it.
     const safety = classifyClosureSafety({ ...extracted.closureTelemetry, wordCount: extracted.wordCount });
+
+    // bodyWords: what the MAIN frame's body actually holds, independent of the
+    // extractor's own block selection — the recall denominator. A separate
+    // page.evaluate (not part of the extractor run above) using the same
+    // tokenising rule as wordCount (in-tab-extractor.js:303) so the two are
+    // comparable.
+    let bodyWords = null;
+    try {
+      bodyWords = await page.mainFrame().evaluate(() => {
+        const text = document.body ? document.body.innerText : '';
+        return text.trim().split(/\s+/).filter(Boolean).length;
+      });
+    } catch { /* detached frame or navigation mid-measure: leave bodyWords null */ }
+
+    const recall = bodyWords ? extracted.wordCount / bodyWords : null;
+
     return {
       url,
       expect,
@@ -113,6 +129,8 @@ async function measure(context, { url, expect }) {
       isDirty: extracted.isDirty,
       dirtyReason: extracted.reason,
       wordCount: extracted.wordCount,
+      bodyWords,
+      recall,
       inputCounts: extracted.closureTelemetry.inputCounts
     };
   } catch (err) {
@@ -148,6 +166,17 @@ function report(results, floor) {
   const byReason = new Map();
   for (const r of suspend) byReason.set(r.reason, (byReason.get(r.reason) || 0) + 1);
 
+  // Extraction recall: extracted words vs. what the body actually holds.
+  // 25% is a reporting aid to flag rows for attention, not a gate — see
+  // EXTRACTION_PLAN.md Step 1. Sorted ascending so the worst recovery leads.
+  const RECALL_FLOOR = 0.25;
+  const recallRows = ok.slice().sort((a, b) => {
+    const ra = a.recall === null ? Infinity : a.recall;
+    const rb = b.recall === null ? Infinity : b.recall;
+    return ra - rb;
+  });
+  const lowRecall = ok.filter((r) => r.recall !== null && r.recall < RECALL_FLOOR);
+
   const pct = (n, d) => (d ? `${((n / d) * 100).toFixed(1)}%` : 'n/a');
   const lines = [
     '# Closure Ratio Report',
@@ -181,6 +210,18 @@ function report(results, floor) {
     ...(missed.length ? ['## Reading pages still held open', '',
       '| URL | Rule that caught it | Words |', '| :--- | :--- | ---: |',
       ...missed.map((r) => `| ${r.url} | ${r.reason} | ${r.wordCount} |`), ''] : []),
+    '## Extraction recall',
+    '',
+    `25% is a reporting aid to flag rows below for attention, not a gate — see EXTRACTION_PLAN.md Step 1.`,
+    '',
+    '| URL | Extracted words | Body words | Recall |',
+    '| :--- | ---: | ---: | ---: |',
+    ...recallRows.map((r) => {
+      const recallPct = r.recall === null ? 'n/a' : `${(r.recall * 100).toFixed(1)}%`;
+      const mark = r.recall !== null && r.recall < RECALL_FLOOR ? ' ⚠️' : '';
+      return `| ${r.url}${mark} | ${r.wordCount} | ${r.bodyWords ?? 'n/a'} | ${recallPct} |`;
+    }),
+    '',
     '## Why tabs were held back',
     '',
     '| Rule that caught it | Count |',
@@ -207,7 +248,8 @@ function report(results, floor) {
   return { markdown: lines.join('\n') + '\n', closeRate, ok: ok.length, closeCount: close.length,
            suspendCount: suspend.length, failed: failed.length,
            leaks: leaks.length, missed: missed.length, wantClose: wantClose.length,
-           wantSuspend: wantSuspend.length, unreachableSuspend: unreachableSuspend.length };
+           wantSuspend: wantSuspend.length, unreachableSuspend: unreachableSuspend.length,
+           lowRecallUrls: lowRecall.map((r) => r.url) };
 }
 
 (async () => {
@@ -240,6 +282,8 @@ function report(results, floor) {
     console.log(`note: ${out.unreachableSuspend} must-suspend page(s) never loaded — the leak gate did not see them.`);
   }
   console.log(`Report: ${file}`);
+  console.log(`extraction recall < 25% (reporting aid, not a gate): ${out.lowRecallUrls.length} page(s)` +
+    (out.lowRecallUrls.length ? ` — ${out.lowRecallUrls.join(', ')}` : ''));
 
   if (out.ok === 0) {
     console.error('FAIL: no URLs were reachable — nothing was measured.');
