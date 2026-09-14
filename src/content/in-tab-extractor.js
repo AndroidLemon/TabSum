@@ -303,6 +303,12 @@
   // leaf on its own — without the ancestor check both would contribute and
   // double-count the same text. Cached per element since the ancestor walk
   // revisits shared ancestors for every sibling under them.
+  //
+  // ponytail: a semantic block disqualified by a nested block loses its OWN
+  // preamble text -- nodejs.org's `<li>options <ul>...</ul></li>` drops the
+  // word "options" per option group (fs.html recall 92.7% -> 81.1%, still
+  // closeable). Upgrade path if that ever matters: harvest the disqualified
+  // element's non-block child nodes as one extra fragment.
   const harvestableCache = new WeakMap();
   function isHarvestable(el) {
     if (harvestableCache.has(el)) return harvestableCache.get(el);
