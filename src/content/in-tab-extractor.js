@@ -202,6 +202,13 @@
       }
     }
 
+    // designMode makes the whole document editable rather than a single element,
+    // which is how classic TinyMCE/CKEditor turn an iframe into an editor surface.
+    // TEXT_EDITOR_SELECTOR only ever matches elements, so it can never see this.
+    if (document.designMode === 'on' && document.body?.innerText.trim().length > 5) {
+      return { isDirty: true, reason: 'Unsaved rich-text editor draft detected' };
+    }
+
     // Check active Picture-in-Picture
     if (document.pictureInPictureElement) {
       return { isDirty: true, reason: 'Active picture-in-picture video playing' };
@@ -324,7 +331,8 @@
         textareas: queryAllDeep('textarea').filter(isVisibleControl).length,
         selects: queryAllDeep('select').filter(s => isVisibleControl(s) && isInMeaningfulForm(s)).length,
         passwords: passwordInputs.length,
-        appContainers: queryAllDeep(EDITOR_SURFACE_SELECTOR).filter(isVisibleControl).length,
+        appContainers: queryAllDeep(EDITOR_SURFACE_SELECTOR).filter(isVisibleControl).length
+          + (document.designMode === 'on' ? 1 : 0),
         otherInputs: otherInputs.length
       },
       // A page built around a player is not a reading page: its state is playback

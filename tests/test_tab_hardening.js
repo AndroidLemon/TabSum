@@ -177,6 +177,36 @@ function createMockServer() {
       return;
     }
 
+    // A classic TinyMCE/CKEditor-style editor: no element carries the editing
+    // role, the whole iframe document does via document.designMode = 'on'.
+    if (req.url === '/designmode-editor') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Newsletter Composer</title></head>
+        <body>
+          <h1>Compose</h1>
+          <p>${'Draft your newsletter below before sending it out. '.repeat(40)}</p>
+          <iframe src="/designmode-frame" width="600" height="400"></iframe>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    if (req.url === '/designmode-frame') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <body>
+          <p>Unsaved newsletter draft the user has not sent yet.</p>
+          <script>document.designMode = 'on';</script>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
     // A select that IS data entry: it sits in a form with a submit button.
     if (req.url === '/submit-form-select') {
       res.end(`
@@ -388,7 +418,10 @@ async function runHardeningTests() {
         why: 'a virtualized editor is visible only through its vendor class, and its draft is unsaved work' },
       { route: '/submit-form-select', tier: 'suspend_only',
         expect: { selects: 1 },
-        why: 'a select inside a submittable form is real data entry' }
+        why: 'a select inside a submittable form is real data entry' },
+      { route: '/designmode-editor', tier: 'suspend_only', dirty: true,
+        expect: { appContainers: 1 },
+        why: 'document.designMode turns the whole iframe document into an editor, with no element for TEXT_EDITOR_SELECTOR to match' }
     ];
 
     for (const testCase of telemetryCases) {
@@ -396,15 +429,19 @@ async function runHardeningTests() {
       await casePage.goto(`http://localhost:${PORT}${testCase.route}`);
       await casePage.waitForLoadState('domcontentloaded');
 
-      const caseResult = await background.evaluate(async (route) => {
+      const caseFrames = await background.evaluate(async (route) => {
         const tabs = await chrome.tabs.query({});
         const target = tabs.find(t => t.url.includes(route));
         const results = await chrome.scripting.executeScript({
           target: { tabId: target.id, allFrames: true },
           files: ['src/content/in-tab-extractor.js']
         });
-        return results?.[0]?.result;
+        return results.map(r => ({ frameId: r.frameId, result: r.result }));
       }, testCase.route);
+      // Merge, same as the background service worker does, so a case whose
+      // editor surface lives in a subframe (e.g. designmode-editor) is judged
+      // on what the tab as a whole reports, not on whichever frame came first.
+      const caseResult = mergeFrameExtractions(caseFrames);
 
       for (const [key, want] of Object.entries(testCase.expect)) {
         assert.strictEqual(caseResult.closureTelemetry.inputCounts[key], want,
