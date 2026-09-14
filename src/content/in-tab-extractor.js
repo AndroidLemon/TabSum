@@ -277,6 +277,50 @@
     '.ad, .ads, .advertisement, #cookie-banner, .cookie-notice, .consent-modal, ' +
     '.social-share, .newsletter-signup, .sidebar, [role="banner"], [role="navigation"]';
 
+  // Step 3 of EXTRACTION_PLAN.md: widen the block selector past h*/p/li/
+  // blockquote so HN's <td>-and-<span> layout and GitHub's <div>/<td> timeline
+  // rows are visible at all, without every ancestor of a real paragraph also
+  // summing that paragraph's words into itself.
+  //
+  // Semantic tags (h*, p, blockquote, li, td, th, dd, dt) carry their own
+  // meaning regardless of what inline markup sits inside them — a <p> wrapping
+  // <span> tags must be harvested as the <p>, not thrown away in favour of its
+  // spans — so their containment check ignores span descendants. div/span
+  // carry no such meaning, so each is harvested only when it is a true leaf.
+  const SEMANTIC_BLOCK_SELECTOR = 'h1, h2, h3, h4, h5, h6, p, blockquote, li, td, th, dd, dt, div';
+  const BLOCK_SELECTOR = `${SEMANTIC_BLOCK_SELECTOR}, span`;
+  // td/th/dd/dt/p hold legitimately short content (HN titles, table cells,
+  // definition terms); li/span/div stay floored — they are where nav lists,
+  // inline labels, and layout wrappers produce short noise.
+  const NO_FLOOR_TAGS = new Set(['td', 'th', 'dd', 'dt', 'p']);
+  const BOILERPLATE_REGEX = /^(cookie|privacy policy|terms|sign in|subscribe|all rights reserved)/i;
+
+  // A block is harvested only if (a) it has no harvestable descendant of its
+  // own — ignoring spans for semantic tags, per the comment above — and
+  // (b) no harvestable ANCESTOR already contains it. (b) is what (a) alone
+  // misses: a semantic tag's ignore-spans rule lets e.g. a <td> be harvestable
+  // even though the <span class="commtext"> inside it is *also* a harvestable
+  // leaf on its own — without the ancestor check both would contribute and
+  // double-count the same text. Cached per element since the ancestor walk
+  // revisits shared ancestors for every sibling under them.
+  const harvestableCache = new WeakMap();
+  function isHarvestable(el) {
+    if (harvestableCache.has(el)) return harvestableCache.get(el);
+    const tag = el.tagName.toLowerCase();
+    const hasBlockingDescendant = (tag === 'div' || tag === 'span')
+      ? el.querySelector(BLOCK_SELECTOR)
+      : el.querySelector(SEMANTIC_BLOCK_SELECTOR);
+    let result;
+    if (hasBlockingDescendant) {
+      result = false;
+    } else {
+      const ancestorBlock = el.parentElement && el.parentElement.closest(BLOCK_SELECTOR);
+      result = !ancestorBlock || !isHarvestable(ancestorBlock);
+    }
+    harvestableCache.set(el, result);
+    return result;
+  }
+
   // 3. Clean Content Extraction (Readability heuristic)
   function extractCleanText() {
     if (!document.body) return '';
@@ -293,7 +337,7 @@
 
     // Collect meaningful text blocks
     const blocks = [];
-    const elements = article.querySelectorAll('h1, h2, h3, h4, h5, h6, p, blockquote, li');
+    const elements = article.querySelectorAll(BLOCK_SELECTOR);
 
     for (const el of elements) {
       // Same noise the old clone-and-strip pass removed, checked live instead.
@@ -303,18 +347,23 @@
       // exactly what a live prose block needs — skip what display:none or
       // off-screen parking hides, same as for a control.
       if (!isVisibleControl(el)) continue;
+      // Leaf/containment rule above — skips a block whose text is already
+      // going to be (or already was) captured by a descendant or an ancestor.
+      if (!isHarvestable(el)) continue;
 
       const text = el.innerText ? el.innerText.trim() : '';
+      const tag = el.tagName.toLowerCase();
+      const floor = NO_FLOOR_TAGS.has(tag) ? 0 : 20;
       // Exclude very short snippets and navigation boilerplate
-      if (text.length > 20 && !/^(cookie|privacy policy|terms|sign in|subscribe|all rights reserved)/i.test(text)) {
+      if (text.length > floor && !BOILERPLATE_REGEX.test(text)) {
         blocks.push(text);
       }
     }
 
-    // ponytail: nested blocks (li > li, p inside blockquote) can still be
-    // double-counted — querySelectorAll returns parent and child alike, each
-    // contributing its own innerText. Step 3's leaf-text rule is the upgrade
-    // path; left alone here since this step is only the live-DOM walk.
+    // Nested blocks (li > li, p inside blockquote, div > div > p) no longer
+    // double count: isHarvestable's leaf/containment rule above skips any
+    // element whose text a descendant or an ancestor already contributes, so
+    // only the one correct block in each chain reaches here.
     const fullText = blocks.join('\n\n');
     return fullText;
   }

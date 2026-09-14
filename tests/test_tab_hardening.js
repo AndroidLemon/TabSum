@@ -38,6 +38,17 @@ const HIDDEN_DIV_PARAGRAPHS = [
 const OFFSCREEN_PARAGRAPH = makeWords('offscreen-', 15);
 const NAV_PARAGRAPH = makeWords('navword-', 6);
 
+// Fixtures for the /table-prose route (Step 3 of EXTRACTION_PLAN.md), modelled
+// on HN: short <td> titles (must be harvested despite being under 20 chars)
+// and <span class="commtext"> comments nested inside a <td> (must be counted
+// once, via the <td>, not a second time via the <span>). Titles are kept
+// under 20 chars on purpose -- that is the exact case the dropped floor fixes.
+const TABLE_TITLES = [makeWords('ttl0-', 2), makeWords('ttl1-', 2)];
+const TABLE_COMMENTS = [makeWords('cmt0-', 6), makeWords('cmt1-', 6)];
+// A <p> nested two <div>s deep must be counted exactly once, not once per
+// wrapping <div> -- the double-counting the leaf/containment rule exists to fix.
+const NESTED_PARAGRAPH = makeWords('nested-', 25);
+
 // Mock server serving test pages for dirty checks and lifecycle testing
 function createMockServer() {
   const server = http.createServer((req, res) => {
@@ -306,6 +317,29 @@ function createMockServer() {
       return;
     }
 
+    // Step 3 of the extraction plan: the widened block selector must harvest
+    // <td> titles under the old 20-char floor and a <span class="commtext">
+    // nested inside a <td>, counting the comment once (via the <td>) not
+    // twice; and a <p> nested two plain <div>s deep must count exactly once.
+    if (req.url === '/table-prose') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Table Prose Test</title></head>
+        <body>
+          <table>
+            <tr><td>${TABLE_TITLES[0]}</td></tr>
+            <tr><td>${TABLE_TITLES[1]}</td></tr>
+            <tr><td><span class="commtext">${TABLE_COMMENTS[0]}</span></td></tr>
+            <tr><td><span class="commtext">${TABLE_COMMENTS[1]}</span></td></tr>
+          </table>
+          <div class="outer"><div class="inner"><p>${NESTED_PARAGRAPH}</p></div></div>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
     res.end('<h1>404 Not Found</h1>');
   });
 
@@ -541,6 +575,42 @@ async function runHardeningTests() {
     }
     console.log(`✓ /hidden-prose: wordCount === ${expectedWordCount} (visible only), no hidden/off-screen/nav words leaked into cleanText`);
     await hiddenProsePage.close();
+
+    // 4a-4c. EXTRACTION_PLAN.md Step 3: widened block selector must harvest
+    // <td> titles under the old 20-char floor and count a <p> nested two plain
+    // <div>s deep exactly once, not once per wrapping <div>.
+    const tableProsePage = await context.newPage();
+    await tableProsePage.goto(`http://localhost:${PORT}/table-prose`);
+    await tableProsePage.waitForLoadState('domcontentloaded');
+
+    const tableProseFrames = await background.evaluate(async () => {
+      const tabs = await chrome.tabs.query({});
+      const target = tabs.find(t => t.url.includes('/table-prose'));
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: target.id, allFrames: true },
+        files: ['src/content/in-tab-extractor.js']
+      });
+      return results.map(r => ({ frameId: r.frameId, result: r.result }));
+    });
+    const tableProseResult = mergeFrameExtractions(tableProseFrames);
+
+    const expectedTableWordCount = [...TABLE_TITLES, ...TABLE_COMMENTS, NESTED_PARAGRAPH]
+      .join(' ')
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean).length;
+
+    assert.strictEqual(tableProseResult.wordCount, expectedTableWordCount,
+      `wordCount must equal the exact expected count (${expectedTableWordCount}) — short <td> titles must be harvested and the nested <p> counted exactly once, got ${tableProseResult.wordCount}`);
+
+    // The nested <p>'s first word must appear exactly once: not zero (dropped)
+    // and not twice (double-counted by both wrapping <div>s).
+    const nestedOccurrences = tableProseResult.cleanText.split('nested-0').length - 1;
+    assert.strictEqual(nestedOccurrences, 1,
+      `"nested-0" must appear exactly once in cleanText — nested <div>s must not double-count the <p> they wrap`);
+
+    console.log(`✓ /table-prose: wordCount === ${expectedTableWordCount} (short <td> titles harvested, <span> comment counted once via its <td>, nested <p> counted once)`);
+    await tableProsePage.close();
 
     // 4a-5. The box test compares against the document origin, not the viewport.
     // Read raw, getBoundingClientRect made every control above the fold look
