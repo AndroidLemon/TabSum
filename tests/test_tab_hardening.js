@@ -18,6 +18,26 @@ import { buildTestExtension, extensionLaunchOptions } from './helpers/test-exten
 const EXTENSION_PATH = buildTestExtension();
 const USER_DATA_DIR = path.resolve('./tests/.playwright_user_data_hardening');
 
+// Word fixtures for the /hidden-prose route (Step 2 of EXTRACTION_PLAN.md).
+// Every paragraph gets its own unique word prefix so the test can assert a
+// hidden/off-screen/nav word never appears in cleanText without relying on
+// any particular boilerplate phrase.
+function makeWords(prefix, count) {
+  return Array.from({ length: count }, (_, i) => `${prefix}${i}`).join(' ');
+}
+const VISIBLE_PARAGRAPHS = [
+  makeWords('visible0-', 30),
+  makeWords('visible1-', 30),
+  makeWords('visible2-', 30)
+];
+const HIDDEN_DIV_PARAGRAPHS = [
+  makeWords('hiddendiv0-', 20),
+  makeWords('hiddendiv1-', 20),
+  makeWords('hiddendiv2-', 20)
+];
+const OFFSCREEN_PARAGRAPH = makeWords('offscreen-', 15);
+const NAV_PARAGRAPH = makeWords('navword-', 6);
+
 // Mock server serving test pages for dirty checks and lifecycle testing
 function createMockServer() {
   const server = http.createServer((req, res) => {
@@ -259,6 +279,33 @@ function createMockServer() {
       return;
     }
 
+    // Step 2 of the extraction plan: the live-DOM harvest must skip hidden and
+    // off-screen prose that a detached clone's innerText === textContent used
+    // to let straight through, and must still skip nav text via the noise list.
+    if (req.url === '/hidden-prose') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Hidden Prose Test</title></head>
+        <body>
+          <article>
+            <p>${VISIBLE_PARAGRAPHS[0]}</p>
+            <p>${VISIBLE_PARAGRAPHS[1]}</p>
+            <p>${VISIBLE_PARAGRAPHS[2]}</p>
+            <div style="display:none">
+              <p>${HIDDEN_DIV_PARAGRAPHS[0]}</p>
+              <p>${HIDDEN_DIV_PARAGRAPHS[1]}</p>
+              <p>${HIDDEN_DIV_PARAGRAPHS[2]}</p>
+            </div>
+            <p style="position:absolute;left:-9999px">${OFFSCREEN_PARAGRAPH}</p>
+          </article>
+          <nav><p>${NAV_PARAGRAPH}</p></nav>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
     res.end('<h1>404 Not Found</h1>');
   });
 
@@ -459,6 +506,41 @@ async function runHardeningTests() {
       console.log(`✓ ${testCase.route} -> ${testCase.tier} (${testCase.why})`);
       await casePage.close();
     }
+
+    // 4a-4b. EXTRACTION_PLAN.md Step 2: the live-DOM harvest must recover
+    // exactly the visible prose and none of the hidden/off-screen/nav prose
+    // that a detached clone's innerText === textContent used to leak through.
+    const hiddenProsePage = await context.newPage();
+    await hiddenProsePage.goto(`http://localhost:${PORT}/hidden-prose`);
+    await hiddenProsePage.waitForLoadState('domcontentloaded');
+
+    const hiddenProseFrames = await background.evaluate(async () => {
+      const tabs = await chrome.tabs.query({});
+      const target = tabs.find(t => t.url.includes('/hidden-prose'));
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: target.id, allFrames: true },
+        files: ['src/content/in-tab-extractor.js']
+      });
+      return results.map(r => ({ frameId: r.frameId, result: r.result }));
+    });
+    const hiddenProseResult = mergeFrameExtractions(hiddenProseFrames);
+
+    const expectedWordCount = VISIBLE_PARAGRAPHS
+      .join(' ')
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean).length;
+
+    assert.strictEqual(hiddenProseResult.wordCount, expectedWordCount,
+      `wordCount must equal exactly the visible paragraphs' word count (${expectedWordCount}), got ${hiddenProseResult.wordCount}`);
+
+    const hiddenWords = ['hiddendiv0-0', 'hiddendiv1-0', 'hiddendiv2-0', 'offscreen-0', 'navword-0'];
+    for (const word of hiddenWords) {
+      assert.ok(!hiddenProseResult.cleanText.includes(word),
+        `cleanText must not contain "${word}" — hidden/off-screen/nav prose must not survive the live-DOM harvest`);
+    }
+    console.log(`✓ /hidden-prose: wordCount === ${expectedWordCount} (visible only), no hidden/off-screen/nav words leaked into cleanText`);
+    await hiddenProsePage.close();
 
     // 4a-5. The box test compares against the document origin, not the viewport.
     // Read raw, getBoundingClientRect made every control above the fold look

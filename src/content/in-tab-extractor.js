@@ -269,28 +269,41 @@
     }
   }
 
+  // Elements a prose block must not be found inside. Hoisted so the list is
+  // defined once rather than rebuilt (or re-queried) per extraction, and shared
+  // by nothing else today — it is the same set extractCleanText used to strip
+  // from a detached clone, now checked live via closest() instead.
+  const NOISE_SELECTOR = 'script, style, noscript, nav, header, footer, aside, form, svg, iframe, ' +
+    '.ad, .ads, .advertisement, #cookie-banner, .cookie-notice, .consent-modal, ' +
+    '.social-share, .newsletter-signup, .sidebar, [role="banner"], [role="navigation"]';
+
   // 3. Clean Content Extraction (Readability heuristic)
   function extractCleanText() {
     if (!document.body) return '';
-    // Clone body so we don't modify the real page
-    const clone = document.body.cloneNode(true);
 
-    // Remove noise elements
-    const unwanted = clone.querySelectorAll(
-      'script, style, noscript, nav, header, footer, aside, form, svg, iframe, ' +
-      '.ad, .ads, .advertisement, #cookie-banner, .cookie-notice, .consent-modal, ' +
-      '.social-share, .newsletter-signup, .sidebar, [role="banner"], [role="navigation"]'
-    );
-    unwanted.forEach(el => el.remove());
-
-    // Locate primary content container if present
-    const article = clone.querySelector('article, main, [role="main"], .post-content, .article-content, .entry-content') || clone;
+    // Walk the LIVE document instead of a detached clone. A clone is cheap to
+    // build but costs layout, which is exactly what tells prose from chrome:
+    // on a detached node, checkVisibility/getBoundingClientRect have nothing
+    // to answer from, and clone.innerText === clone.textContent (measured) —
+    // so hidden nav text leaked straight into the harvest, and line breaks
+    // never got normalised. Reading el.innerText on the live element keeps both.
+    const article = document.querySelector(
+      'article, main, [role="main"], .post-content, .article-content, .entry-content'
+    ) || document.body;
 
     // Collect meaningful text blocks
     const blocks = [];
     const elements = article.querySelectorAll('h1, h2, h3, h4, h5, h6, p, blockquote, li');
 
     for (const el of elements) {
+      // Same noise the old clone-and-strip pass removed, checked live instead.
+      if (el.closest(NOISE_SELECTOR)) continue;
+      // Reused from the dirty-check's control-visibility test on purpose: despite
+      // the name, its checks (checkVisibility, then the document-space box) are
+      // exactly what a live prose block needs — skip what display:none or
+      // off-screen parking hides, same as for a control.
+      if (!isVisibleControl(el)) continue;
+
       const text = el.innerText ? el.innerText.trim() : '';
       // Exclude very short snippets and navigation boilerplate
       if (text.length > 20 && !/^(cookie|privacy policy|terms|sign in|subscribe|all rights reserved)/i.test(text)) {
@@ -298,6 +311,10 @@
       }
     }
 
+    // ponytail: nested blocks (li > li, p inside blockquote) can still be
+    // double-counted — querySelectorAll returns parent and child alike, each
+    // contributing its own innerText. Step 3's leaf-text rule is the upgrade
+    // path; left alone here since this step is only the live-DOM walk.
     const fullText = blocks.join('\n\n');
     return fullText;
   }
