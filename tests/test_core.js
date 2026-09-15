@@ -3,8 +3,9 @@
  */
 
 import assert from 'node:assert';
-import { summarizeWithHeuristics, summarizeContent, normalizeSummary, generateTags } from '../src/ai/summarizer.js';
+import { summarizeWithHeuristics, summarizeContent, normalizeSummary, excerpt } from '../src/ai/summarizer.js';
 import { extractDomain, DEFAULT_SETTINGS } from '../src/storage/db.js';
+import { withTimeout } from '../src/shared/with-timeout.js';
 
 console.log('--- Running TabSum Core Verification Tests ---');
 
@@ -38,11 +39,9 @@ const summary = summarizeWithHeuristics(sampleArticle);
 assert.ok(summary.tldr, 'TL;DR should exist');
 assert.ok(summary.bullets.length > 0, 'Bullets should exist');
 assert.deepStrictEqual(summary.tags, [], 'Heuristic summaries carry no tags; only AI tiers tag');
-const sampleTags = generateTags(sampleArticle.title, sampleArticle.cleanText, sampleArticle.domain);
-assert.ok(sampleTags.includes('Engineering') || sampleTags.includes('Dev'), 'Trial tagger should detect engineering');
-const withHeuristicTags = await summarizeContent(sampleArticle, { aiProvider: 'heuristic' });
-assert.deepStrictEqual(withHeuristicTags.tags, []);
-assert.deepStrictEqual(withHeuristicTags.heuristicTags, sampleTags, 'heuristicTags kept for comparison');
+const heuristicOnly = await summarizeContent(sampleArticle, { aiProvider: 'heuristic' });
+assert.deepStrictEqual(heuristicOnly.tags, [], 'Without an AI tier summarizeContent emits no tags');
+assert.strictEqual('heuristicTags' in heuristicOnly, false, 'Trial tagger output no longer rides on the summary');
 
 console.log('Summary Output:\n', JSON.stringify(summary, null, 2));
 console.log('✓ Heuristic summarizer passed');
@@ -110,24 +109,24 @@ assert.ok(lowConfidenceSummary.tldr, 'Low-confidence pages should still have a t
 assert.strictEqual(lowConfidenceSummary.source, 'heuristic', 'Summaries report which tier wrote them');
 console.log('✓ Low-confidence bullets passed');
 
-// Test 7: Tag heuristics should not over-tag unrelated content
-console.log('Testing tag heuristics do not over-tag...');
-const cookingArticle = {
-  title: 'Simple Weeknight Pasta Recipes',
-  domain: 'homecooking.example',
-  meta: {},
-  cleanText: `
-    Tonight's dinner is a simple pasta dish that comes together in under thirty minutes.
-    Start by boiling salted water and cooking the pasta until just al dente.
-    While the pasta cooks, saute garlic in olive oil until fragrant, then add crushed tomatoes.
-    Simmer the sauce, season with basil and a pinch of sugar, then toss with the drained pasta.
-    Finish with grated parmesan and fresh cracked pepper before serving warm.
-  `
-};
-const cookingTags = generateTags(cookingArticle.title, cookingArticle.cleanText, cookingArticle.domain);
-assert.ok(!cookingTags.includes('Engineering'), 'Cooking article must not be tagged Engineering');
-assert.ok(!cookingTags.includes('Business'), 'Cooking article must not be tagged Business');
-console.log('✓ Tag heuristics over-tagging check passed');
+console.log('Testing block-aware excerpt...');
+const nav = Array.from({ length: 12 }, (_, i) => `Nav item ${i}`);
+const heading = 'The Actual Article Heading';
+const paragraph = 'Real prose sentence that carries the article. '.repeat(7); // 329 chars
+const chromeThenArticle = [...nav, heading, paragraph, 'Closing remark.'].join('\n\n');
+assert.ok(excerpt(chromeThenArticle, 6000).startsWith(heading), 'Excerpt starts at the heading before the first real paragraph');
+assert.ok(!excerpt(chromeThenArticle, 6000).includes('Nav item'), 'Nav fragments ahead of the article are dropped');
+const allShort = Array.from({ length: 30 }, (_, i) => `Story title number ${i} on the front page`).join('\n\n');
+assert.ok(excerpt(allShort, 6000).startsWith('Story title number 0'), 'With no real paragraph (HN front page) the excerpt starts at block 0');
+assert.ok(excerpt(chromeThenArticle, 400).length <= 400, 'Excerpt never exceeds maxChars');
+assert.strictEqual(excerpt('x'.repeat(7000), 6000).length, 6000, 'A single oversized block is hard-sliced to maxChars');
+assert.strictEqual(excerpt('Heading\n\n' + 'y'.repeat(6500), 6000).length, 6000, 'A heading followed by one oversized block keeps the body, hard-sliced, instead of dropping it');
+console.log('✓ Block-aware excerpt passed');
+
+console.log('Testing withTimeout...');
+await assert.rejects(withTimeout(new Promise(() => {}), 10), /timed out/, 'A hung promise must reject with a timeout error');
+assert.strictEqual(await withTimeout(Promise.resolve(1), 10), 1, 'A settled promise passes its value through');
+console.log('✓ withTimeout passed');
 
 // Test 8: In-tab extractor title separator regex (honest regex-only test;
 // the extractor stays a self-contained IIFE injected by chrome.scripting)

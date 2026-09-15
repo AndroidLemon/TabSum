@@ -242,6 +242,7 @@ function createMockServer() {
           <textarea style="display:none"></textarea>
           <textarea style="position:absolute;left:-9999px;top:-9999px"></textarea>
           <select style="visibility:hidden"><option>a</option></select>
+          <script>document.querySelector('textarea').value = 'a draft the user typed, then the page hid the box (GitHub Preview mode)';</script>
         </body>
         </html>
       `);
@@ -516,6 +517,41 @@ function createMockServer() {
       return;
     }
 
+    // pkg.go.dev's shape: a docs page whose every example carries a "Run" textarea under a
+    // closed <details>, its value filled by script on load. Folded away is not a draft.
+    // The same page with the details OPEN must still read as unsaved work: the rule is
+    // closed-details only, not "unrendered".
+    const exampleDoc = (open) => `
+        <!DOCTYPE html>
+        <html>
+        <head><title>net/http</title></head>
+        <body>
+          <article><h1>Package http</h1><p>${'Package http provides HTTP client and server implementations. '.repeat(40)}</p></article>
+          <details${open ? ' open' : ''}><summary>Example</summary><div><textarea class="code"></textarea></div></details>
+          <script>document.querySelector('textarea').value = 'package main // run me';</script>
+        </body>
+        </html>
+      `;
+    if (req.url === '/folded-example') { res.end(exampleDoc(false)); return; }
+    if (req.url === '/unfolded-example') { res.end(exampleDoc(true)); return; }
+
+    // The <summary> line renders even when its <details> is closed: a control there is
+    // visible and typed-into, so the folded-away rule must not swallow it.
+    if (req.url === '/summary-control') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Filtered Docs</title></head>
+        <body>
+          <article><h1>Reference</h1><p>${'Reference prose the reader came here for. '.repeat(40)}</p></article>
+          <details><summary>Filter: <input type="text" name="filter"></summary><div>Filtered content appears here.</div></details>
+          <script>document.querySelector('input').value = 'typed filter';</script>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
     res.end('<h1>404 Not Found</h1>');
   });
 
@@ -676,9 +712,9 @@ async function runHardeningTests() {
 
     // 4a-4. Table-driven coverage for the telemetry rules added in Steps 3-6.
     const telemetryCases = [
-      { route: '/hidden-controls', tier: 'safe_to_close',
+      { route: '/hidden-controls', tier: 'safe_to_close', dirty: true,
         expect: { textareas: 0, selects: 0 },
-        why: 'controls the user cannot see are not controls the user is using' },
+        why: 'controls the user cannot see are not counted as controls in use, but a hidden textarea holding a draft is still unsaved work: the closed-details rule must not widen into "unrendered = clean"' },
       { route: '/vendor-editor', tier: 'suspend_only', dirty: true,
         expect: { appContainers: 1 },
         why: 'a virtualized editor is visible only through its vendor class, and its draft is unsaved work' },
@@ -691,7 +727,16 @@ async function runHardeningTests() {
       { route: '/dom-tool', tier: 'suspend_only', dirty: false,
         expect: { appContainers: 0, textareas: 0, selects: 0, passwords: 0, otherInputs: 0 },
         reason: 'Short or low-confidence content',
-        why: 'a DOM-only tool with zero controls is held by rule 4 alone; if a harvest change ever pushes its chrome past 120 words it would close with the user\'s game state' }
+        why: 'a DOM-only tool with zero controls is held by rule 4 alone; if a harvest change ever pushes its chrome past 120 words it would close with the user\'s game state' },
+      { route: '/folded-example', tier: 'safe_to_close', dirty: false,
+        expect: { textareas: 0 },
+        why: 'a script-filled textarea under a closed <details> is content the page folded away, not a draft (pkg.go.dev)' },
+      { route: '/unfolded-example', tier: 'suspend_only', dirty: true,
+        expect: { textareas: 1 },
+        why: 'the same textarea with the details open is a visible draft; the rule is closed-details only, not "unrendered"' },
+      { route: '/summary-control', tier: 'safe_to_close', dirty: true,
+        expect: { otherInputs: 1 },
+        why: 'a control in the <summary> of a closed <details> is rendered and typed-into; the folded-away rule exempts it and the draft stays dirty' }
     ];
 
     for (const testCase of telemetryCases) {

@@ -28,11 +28,14 @@ import {
   canCloseWith,
   isScriptableUrl
 } from '../shared/closure-policy.js';
+import { withTimeout } from '../shared/with-timeout.js';
 
 const ALARM_NAME = 'tabsum-inactivity-sweep';
 const SWEEP_INTERVAL_MINUTES = 1;
 const IDLE_DETECTION_SECONDS = 60;
 const SLEEP_GAP_MS = 5 * 60 * 1000; // sweep gap that means the machine was asleep
+// The extractor measures ~50ms on a 13k-element page; 10s only ever fires on a hung renderer.
+const EXTRACT_TIMEOUT_MS = 10000;
 
 // Chrome may drop alarms across browser restarts; make sure ours exists whenever the worker starts
 chrome.alarms.get(ALARM_NAME).then((alarm) => {
@@ -425,10 +428,10 @@ async function processTabArchival(tab, settings, lastActiveTime) {
     // 1. Inject in-tab content extractor
     // allFrames: the zero-loss guard is blind to iframe-hosted editors otherwise —
     // a TinyMCE/CKEditor draft lives in a frame the top document cannot reach.
-    const results = await chrome.scripting.executeScript({
+    const results = await withTimeout(chrome.scripting.executeScript({
       target: { tabId: tab.id, allFrames: true },
       files: ['src/content/in-tab-extractor.js']
-    });
+    }), EXTRACT_TIMEOUT_MS, 'Extraction');
 
     // 2. Skip empty extractions and tabs with unsaved work; look again after another full timeout
     const extracted = mergeFrameExtractions(results);
@@ -482,7 +485,7 @@ async function processTabArchival(tab, settings, lastActiveTime) {
       wordCount: extracted.wordCount || 0,
       closureTier: safety.tier,
       closureReason,
-      meta: { ...extracted.meta, heuristicTags: summary.heuristicTags }
+      meta: extracted.meta
     }, shouldClose ? 'closed' : 'suspended');
 
     if (shouldClose) {
@@ -501,14 +504,14 @@ async function processTabArchival(tab, settings, lastActiveTime) {
       // Soft discard: Inject sleeping tab indicator 💤 into title before discarding
       let addedPrefix = false;
       try {
-        const [res] = await chrome.scripting.executeScript({
+        const [res] = await withTimeout(chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: () => {
             if (document.title.startsWith('💤 ')) return false;
             document.title = '💤 ' + document.title;
             return true;
           }
-        });
+        }), EXTRACT_TIMEOUT_MS, 'Title injection');
         addedPrefix = res?.result === true;
       } catch (titleErr) {
         console.debug('[TabSum] Could not prefix title with sleeping symbol:', titleErr);
@@ -517,10 +520,10 @@ async function processTabArchival(tab, settings, lastActiveTime) {
       const discardedTab = await chrome.tabs.discard(tab.id).catch(() => null);
       if (!discardedTab) {
         if (addedPrefix) {
-          await chrome.scripting.executeScript({
+          await withTimeout(chrome.scripting.executeScript({
             target: { tabId: tab.id },
             func: () => { document.title = document.title.replace(/^💤 /, ''); }
-          }).catch(() => {});
+          }), EXTRACT_TIMEOUT_MS, 'Title injection').catch(() => {});
         }
         await revertIfStillOpen(tab.id, record.id, false, 'Chrome refused to suspend this tab; summary saved, tab left open');
         return;
@@ -557,10 +560,10 @@ async function archiveActiveTab(activeTab) {
   const lastActive = timestamps[activeTab.id] || Date.now();
 
   // Extract and archive immediately
-  const results = await chrome.scripting.executeScript({
+  const results = await withTimeout(chrome.scripting.executeScript({
     target: { tabId: activeTab.id, allFrames: true },
     files: ['src/content/in-tab-extractor.js']
-  });
+  }), EXTRACT_TIMEOUT_MS, 'Extraction');
 
   const extracted = mergeFrameExtractions(results);
   if (!extracted) {
@@ -582,7 +585,7 @@ async function archiveActiveTab(activeTab) {
     wordCount: extracted.wordCount || 0,
     closureTier: classifyClosureSafety({ ...extracted.closureTelemetry, wordCount: extracted.wordCount }).tier,
     closureReason: 'Saved manually; tab left open',
-    meta: { ...extracted.meta, heuristicTags: summary.heuristicTags }
+    meta: extracted.meta
   }, 'left-open'); // saved; the tab stays open
 
   await updateBadge();

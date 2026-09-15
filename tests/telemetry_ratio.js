@@ -39,7 +39,9 @@ const CORPUS = path.resolve(argOf('--corpus', './tests/fixtures/corpus.txt'));
 // an unsaved textarea on every load — stopped counting as a close it never was.
 // Corpus URLs are bot-blocked headless (403/429/503) and the reachable set shifts
 // run to run, so the denominator itself moves. The leak gate below is the hard
-// one, and it has no tolerance.
+// one, and it has no tolerance. Floor stays 0.80 against a measured 91.4%
+// (32/35, 2026-09-15, logs/baseline-followups1.md): the gap is wider than two
+// pages now; tighten to 0.86 only after three consecutive runs agree.
 const CLOSE_RATE_FLOOR = Number(argOf('--floor', '0.80'));
 const CONCURRENCY = 5;
 const NAV_TIMEOUT_MS = 25000;

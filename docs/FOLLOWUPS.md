@@ -2,29 +2,13 @@
 
 Everything deferred on purpose, in one place. Each entry says where it came
 from, what would make it worth doing, and roughly how big it is. Nothing here
-is a bug that ships broken; the leak gate is 0 of 16 and close recall is 88.6%
-(`logs/baseline-review2.md`). Ordered within each section by how likely the
+is a bug that ships broken; the leak gate is 0 of 21 and close recall is 91.4%
+(`logs/baseline-followups1.md`). Ordered within each section by how likely the
 trigger is to fire during dogfooding.
 
-Last updated 2026-09-15, after PR #4 (extraction-v1) merged.
+Last updated 2026-09-15, after follow-ups round 1 (items 1, 2, 9, 14, 19, 20 done; items 23 and 24 are residuals of 14 and 9).
 
 ## Summariser
-
-1. **Slice the prompt window by block, not by character.**
-   `summarizer.js` sends `cleanText.slice(0, 3000)` (Prompt API) or
-   `slice(0, 6000)` (Gemini, OpenAI-compatible). The harvest now walks every
-   block in DOM order, so any pre-article chrome the noise list does not catch
-   fills the front of that window ahead of the article. Fix: skip runs of
-   short fragments before the first long paragraph, or take the first N blocks
-   over a length floor. From the round-2 review (finding C6). Small.
-   *Trigger:* a summary that describes the site's menu instead of the page.
-
-2. **Delete the heuristic-tag trial scaffolding.**
-   `generateTags`/`heuristicTags` in `summarizer.js` run on every capture and
-   store into `record.meta` for a side-by-side comparison that has not been
-   done. Either do the comparison or delete the code. Marked `ponytail:` at
-   `summarizer.js:47`. Small.
-   *Trigger:* any summariser change, or first look at real tag quality.
 
 3. **Is Hacker News worth summarising at all?**
    The front page now extracts at 99.9% recall and closes, but a summary of
@@ -32,6 +16,8 @@ Last updated 2026-09-15, after PR #4 (extraction-v1) merged.
    (`expect: suspend` or a new `expect: skip`), not an extractor change.
    From EXTRACTION_PLAN.md known unknowns and ADR 0001. Tiny.
    *Trigger:* dogfooding; look at the HN entry the first time it appears.
+   Decision 2026-09-15: leave labelled `expect: close`; the first HN summary
+   seen in dogfooding decides it.
 
 ## Extractor
 
@@ -79,16 +65,16 @@ Last updated 2026-09-15, after PR #4 (extraction-v1) merged.
 
 ## Closure policy
 
-9. **pkg.go.dev is held forever by hidden clipboard-shim textareas.**
-   `checkIsDirty` is deliberately not visibility-gated (a hidden textarea with
-   a real draft is real), but pkg.go.dev ships pre-filled hidden textareas on
-   every load, so a pure documentation page reports unsaved work on every
-   sweep and can never be archived. Candidate: treat a textarea whose value
-   equals its `defaultValue` AND is hidden as not dirty, or skip
-   `[readonly]`/`aria-hidden` shims. From CLOSURE_POLICY_PLAN.md:544. Small,
-   but the change touches the zero-loss guard, so it needs a fixture and a
-   corpus run.
-   *Trigger:* the first user complaint that a docs site never closes.
+24. **The closed-details exemption loses a draft typed, then collapsed.**
+    `checkIsDirty` treats a value-bearing control under a closed `<details>`
+    as folded-away page content, which is what pkg.go.dev's script-filled
+    example boxes are. A user who opens the section, types, and collapses it
+    again looks identical at sweep time. Named as the ceiling in the
+    `ponytail:` comment at the rule. Upgrade path: a load-time content
+    script that snapshots control values (or records `input` events) so the
+    sweep can diff against what the page shipped. Needs a manifest change.
+    Raised by Copilot on PR #6. Small to medium.
+    *Trigger:* a lost edit inside a collapsible section.
 
 10. **Cross-origin frame gap rule.**
     A substantial cross-origin iframe that `executeScript` cannot reach could
@@ -122,11 +108,14 @@ Last updated 2026-09-15, after PR #4 (extraction-v1) merged.
 
 ## Service worker
 
-14. **No timeout on the sequential sweep's `executeScript`.**
-    A tab whose renderer hangs blocks the whole archival sweep. Wrap each
-    injection in `Promise.race` with a timeout and skip the tab. From review
-    finding C8. Small.
-    *Trigger:* a sweep that never finishes.
+23. **The sweep timeout is per injection, not per sweep.**
+    `EXTRACT_TIMEOUT_MS` bounds each `executeScript` at 10s, so N tabs on
+    one hung renderer cost N x 10s and a sweep with six or more outlives the
+    one-minute alarm. Finite and self-healing (the next alarm is skipped by
+    `isSweeping`, not queued). Upgrade path: a per-sweep budget, or skip
+    every tab in a process that already timed out. From the Task 1 review.
+    Small.
+    *Trigger:* a sweep log showing consecutive extraction timeouts.
 
 15. **Does `chrome.tabs.discard()` lose contenteditable drafts?**
     The soft-suspend path assumes yes and holds such tabs, but it has never
@@ -155,19 +144,6 @@ Last updated 2026-09-15, after PR #4 (extraction-v1) merged.
     the TL;DR slot). Listed so the next card-layout change knows the rule.
 
 ## Measurement and corpus
-
-19. **The corpus cannot isolate rule 1.**
-    QA practice sites are under 120 words, so rule 4 fires first. Isolating
-    rule 1 needs pages that are both long and interactive: Swagger UI,
-    Grafana, cloud consoles. From CLOSURE_POLICY_PLAN.md known unknowns.
-    Small, but each new must-suspend URL needs to be reachable headless.
-    *Trigger:* the next rule 1 change.
-
-20. **Eight corpus URLs are bot-blocked headless.**
-    The reachable denominator moves run to run, which is why the recall floor
-    sits three points under the measured rate. Replace blocked URLs with
-    equivalents that serve headless Chromium, or accept the drift. Tiny per
-    URL.
 
 21. **Copilot re-review cannot be requested through the API.**
     `POST /pulls/N/requested_reviewers` for the bot returns nothing and the
