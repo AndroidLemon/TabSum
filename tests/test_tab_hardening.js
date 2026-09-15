@@ -13,7 +13,7 @@ import { chromium } from '@playwright/test';
 import { mergeFrameExtractions, classifyClosureSafety } from '../src/shared/closure-policy.js';
 
 const PORT = 8891;
-import { buildTestExtension, extensionLaunchOptions } from './helpers/test-extension.js';
+import { buildTestExtension, extensionLaunchOptions, extractTab, waitForServiceWorker } from './helpers/test-extension.js';
 
 const EXTENSION_PATH = buildTestExtension();
 const USER_DATA_DIR = path.resolve('./tests/.playwright_user_data_hardening');
@@ -562,7 +562,7 @@ function createMockServer() {
 // results exactly as the background service worker does. The worker can't
 // dynamic-import (banned on ServiceWorkerGlobalScope), so it hands back the raw
 // per-frame results and the pure merge runs here in Node.
-async function extractTab(background, route) {
+async function extractTabAllFrames(background, route) {
   const frames = await background.evaluate(async (target) => {
     const tabs = await chrome.tabs.query({});
     const tab = tabs.find(t => t.url.includes(target));
@@ -590,10 +590,7 @@ async function runHardeningTests() {
     context = await chromium.launchPersistentContext(USER_DATA_DIR,
       extensionLaunchOptions(EXTENSION_PATH, ['--no-first-run']));
 
-    let [background] = context.serviceWorkers();
-    if (!background) {
-      background = await context.waitForEvent('serviceworker', { timeout: 10000 });
-    }
+    const background = await waitForServiceWorker(context);
     const extensionId = background.url().split('/')[2];
     console.log(`✓ Extension loaded with ID: ${extensionId}\n`);
 
@@ -645,15 +642,7 @@ async function runHardeningTests() {
     await richPage.goto(`http://localhost:${PORT}/rich-editor`);
     await richPage.waitForLoadState('domcontentloaded');
 
-    const richCheck = await background.evaluate(async () => {
-      const tabs = await chrome.tabs.query({});
-      const target = tabs.find(t => t.url.includes('/rich-editor'));
-      const results = await chrome.scripting.executeScript({
-        target: { tabId: target.id },
-        files: ['src/content/in-tab-extractor.js']
-      });
-      return results?.[0]?.result;
-    });
+    const richCheck = await extractTab(background, '/rich-editor');
 
     assert.strictEqual(richCheck.isDirty, true, 'ProseMirror rich editor draft must trigger isDirty');
     console.log(`✓ Rich editor detected: reason = "${richCheck.reason}"`);
@@ -698,7 +687,7 @@ async function runHardeningTests() {
     await orphanPage.goto(`http://localhost:${PORT}/orphan-picker`);
     await orphanPage.waitForLoadState('domcontentloaded');
 
-    const orphanCheck = await extractTab(background, '/orphan-picker');
+    const orphanCheck = await extractTabAllFrames(background, '/orphan-picker');
 
     assert.strictEqual(orphanCheck.closureTelemetry.inputCounts.selects, 0,
       'a version picker outside a form is chrome, not data entry');
@@ -749,7 +738,7 @@ async function runHardeningTests() {
       // Merged, same as the background service worker does, so a case whose
       // editor surface lives in a subframe (e.g. designmode-editor) is judged
       // on what the tab as a whole reports, not on whichever frame came first.
-      const caseResult = await extractTab(background, testCase.route);
+      const caseResult = await extractTabAllFrames(background, testCase.route);
 
       for (const [key, want] of Object.entries(testCase.expect)) {
         assert.strictEqual(caseResult.closureTelemetry.inputCounts[key], want,
@@ -778,7 +767,7 @@ async function runHardeningTests() {
     await hiddenProsePage.goto(`http://localhost:${PORT}/hidden-prose`);
     await hiddenProsePage.waitForLoadState('domcontentloaded');
 
-    const hiddenProseResult = await extractTab(background, '/hidden-prose');
+    const hiddenProseResult = await extractTabAllFrames(background, '/hidden-prose');
 
     const expectedWordCount = VISIBLE_PARAGRAPHS
       .join(' ')
@@ -804,7 +793,7 @@ async function runHardeningTests() {
     await tableProsePage.goto(`http://localhost:${PORT}/table-prose`);
     await tableProsePage.waitForLoadState('domcontentloaded');
 
-    const tableProseResult = await extractTab(background, '/table-prose');
+    const tableProseResult = await extractTabAllFrames(background, '/table-prose');
 
     const expectedTableWordCount = [...TABLE_TITLES, ...TABLE_COMMENTS, NESTED_PARAGRAPH]
       .join(' ')
@@ -831,7 +820,7 @@ async function runHardeningTests() {
     await nestedSpansPage.goto(`http://localhost:${PORT}/nested-spans`);
     await nestedSpansPage.waitForLoadState('domcontentloaded');
 
-    const nestedSpansResult = await extractTab(background, '/nested-spans');
+    const nestedSpansResult = await extractTabAllFrames(background, '/nested-spans');
 
     // WORDS4 (inside a closed <details>) is asserted separately below, not
     // folded into this expectation, so a surprise there is visible on its own.
@@ -866,7 +855,7 @@ async function runHardeningTests() {
     await textNodesPage.goto(`http://localhost:${PORT}/text-nodes`);
     await textNodesPage.waitForLoadState('domcontentloaded');
 
-    const textNodesResult = await extractTab(background, '/text-nodes');
+    const textNodesResult = await extractTabAllFrames(background, '/text-nodes');
 
     const expectedTextNodesWordCount = [
       TEXTNODE_A, TEXTNODE_B, TEXTNODE_C, TEXTNODE_REVEAL,
@@ -915,15 +904,7 @@ async function runHardeningTests() {
     await designmodeTopPage.goto(`http://localhost:${PORT}/designmode-top`);
     await designmodeTopPage.waitForLoadState('domcontentloaded');
 
-    const designmodeTopCheck = await background.evaluate(async () => {
-      const tabs = await chrome.tabs.query({});
-      const target = tabs.find(t => t.url.includes('/designmode-top'));
-      const results = await chrome.scripting.executeScript({
-        target: { tabId: target.id },
-        files: ['src/content/in-tab-extractor.js']
-      });
-      return results?.[0]?.result;
-    });
+    const designmodeTopCheck = await extractTab(background, '/designmode-top');
 
     assert.strictEqual(designmodeTopCheck.isDirty, false,
       'designMode on the top document must not mark the tab dirty -- copy-enabler extensions set it on every page');
@@ -989,15 +970,7 @@ async function runHardeningTests() {
     await shadowPage.goto(`http://localhost:${PORT}/shadow-dom-form`);
     await shadowPage.waitForLoadState('domcontentloaded');
 
-    const shadowCheck = await background.evaluate(async () => {
-      const tabs = await chrome.tabs.query({});
-      const target = tabs.find(t => t.url.includes('/shadow-dom-form'));
-      const results = await chrome.scripting.executeScript({
-        target: { tabId: target.id },
-        files: ['src/content/in-tab-extractor.js']
-      });
-      return results?.[0]?.result;
-    });
+    const shadowCheck = await extractTab(background, '/shadow-dom-form');
 
     assert.strictEqual(shadowCheck.isDirty, true, 'Shadow DOM modified input must trigger isDirty');
     console.log(`✓ Shadow DOM input detected: reason = "${shadowCheck.reason}"`);
@@ -1008,15 +981,7 @@ async function runHardeningTests() {
     await rolePage.goto(`http://localhost:${PORT}/role-textbox`);
     await rolePage.waitForLoadState('domcontentloaded');
 
-    const roleCheck = await background.evaluate(async () => {
-      const tabs = await chrome.tabs.query({});
-      const target = tabs.find(t => t.url.includes('/role-textbox'));
-      const results = await chrome.scripting.executeScript({
-        target: { tabId: target.id },
-        files: ['src/content/in-tab-extractor.js']
-      });
-      return results?.[0]?.result;
-    });
+    const roleCheck = await extractTab(background, '/role-textbox');
 
     assert.strictEqual(roleCheck.isDirty, true, 'Role="textbox" editor draft must trigger isDirty');
     console.log(`✓ Role="textbox" editor detected: reason = "${roleCheck.reason}"`);
@@ -1027,15 +992,7 @@ async function runHardeningTests() {
     await cleanPage.goto(`http://localhost:${PORT}/clean-article`);
     await cleanPage.waitForLoadState('domcontentloaded');
 
-    const cleanCheck = await background.evaluate(async () => {
-      const tabs = await chrome.tabs.query({});
-      const target = tabs.find(t => t.url.includes('/clean-article'));
-      const results = await chrome.scripting.executeScript({
-        target: { tabId: target.id },
-        files: ['src/content/in-tab-extractor.js']
-      });
-      return results?.[0]?.result;
-    });
+    const cleanCheck = await extractTab(background, '/clean-article');
 
     assert.strictEqual(cleanCheck.isDirty, false, 'Clean page must not be flagged dirty');
     assert.ok(cleanCheck.cleanText.includes('Clean Technical Article'), 'Clean text must be extracted');
