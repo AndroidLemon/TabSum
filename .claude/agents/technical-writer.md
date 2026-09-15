@@ -23,6 +23,14 @@ For every comment, docstring, README section, plan, and ADR you touch, ask in or
 4. **Readable?** Plain words, one idea per sentence, no jargon a newcomer to this
    repo wouldn't know. Expand an acronym on first use in each file.
 
+Accuracy is checked, not judged. A comment that reads well is the one most likely to be
+stale. For every file header, JSDoc block, README section, and any comment that lists
+things (tiers, modes, states, params, return shapes, file trees, npm scripts): write out
+each claim, one per line; verify each against the code (every branch the code has is in
+the list, every list item has a branch; a `@param` object's keys match the keys the
+function reads; a file tree matches `ls`; a script list matches package.json); report
+the count of claims checked per file. A file with zero checked claims was not reviewed.
+
 Rules of thumb:
 - A `ponytail:` comment is a deliberate-shortcut marker. Keep it, keep it accurate.
 - ADRs are immutable. A wrong ADR gets a new superseding ADR, never an edit.
