@@ -2,11 +2,11 @@
 
 Everything deferred on purpose, in one place. Each entry says where it came
 from, what would make it worth doing, and roughly how big it is. Nothing here
-is a bug that ships broken; the leak gate is 0 of 16 and close recall is 88.6%
-(`logs/baseline-review2.md`). Ordered within each section by how likely the
+is a bug that ships broken; the leak gate is 0 of 21 and close recall is 91.4%
+(`logs/baseline-followups1.md`). Ordered within each section by how likely the
 trigger is to fire during dogfooding.
 
-Last updated 2026-09-15, after PR #4 (extraction-v1) merged.
+Last updated 2026-09-15, after follow-ups round 1 (items 1, 2, 9, 14, 19, 20 done).
 
 ## Summariser
 
@@ -16,6 +16,8 @@ Last updated 2026-09-15, after PR #4 (extraction-v1) merged.
    (`expect: suspend` or a new `expect: skip`), not an extractor change.
    From EXTRACTION_PLAN.md known unknowns and ADR 0001. Tiny.
    *Trigger:* dogfooding; look at the HN entry the first time it appears.
+   Decision 2026-09-15: leave labelled `expect: close`; the first HN summary
+   seen in dogfooding decides it.
 
 ## Extractor
 
@@ -95,6 +97,15 @@ Last updated 2026-09-15, after PR #4 (extraction-v1) merged.
 
 ## Service worker
 
+14. **The sweep timeout is per injection, not per sweep.**
+    `EXTRACT_TIMEOUT_MS` bounds each `executeScript` at 10s, so N tabs on
+    one hung renderer cost N x 10s and a sweep with six or more outlives the
+    one-minute alarm. Finite and self-healing (the next alarm is skipped by
+    `isSweeping`, not queued). Upgrade path: a per-sweep budget, or skip
+    every tab in a process that already timed out. From the Task 1 review.
+    Small.
+    *Trigger:* a sweep log showing consecutive extraction timeouts.
+
 15. **Does `chrome.tabs.discard()` lose contenteditable drafts?**
     The soft-suspend path assumes yes and holds such tabs, but it has never
     been measured: Playwright Chromium segfaults on `discard()` in every
@@ -122,19 +133,6 @@ Last updated 2026-09-15, after PR #4 (extraction-v1) merged.
     the TL;DR slot). Listed so the next card-layout change knows the rule.
 
 ## Measurement and corpus
-
-19. **The corpus cannot isolate rule 1.**
-    QA practice sites are under 120 words, so rule 4 fires first. Isolating
-    rule 1 needs pages that are both long and interactive: Swagger UI,
-    Grafana, cloud consoles. From CLOSURE_POLICY_PLAN.md known unknowns.
-    Small, but each new must-suspend URL needs to be reachable headless.
-    *Trigger:* the next rule 1 change.
-
-20. **Eight corpus URLs are bot-blocked headless.**
-    The reachable denominator moves run to run, which is why the recall floor
-    sits three points under the measured rate. Replace blocked URLs with
-    equivalents that serve headless Chromium, or accept the drift. Tiny per
-    URL.
 
 21. **Copilot re-review cannot be requested through the API.**
     `POST /pulls/N/requested_reviewers` for the bot returns nothing and the

@@ -80,13 +80,21 @@ https://the-internet.herokuapp.com/tinymce
 
 # --- commerce / account-shaped paths ---
 https://www.amazon.com/gp/cart/view.html
-https://www.etsy.com/cart
+https://www.demoblaze.com/cart.html
 
 # --- search / filtered listings: exploratory session state ---
 https://duckduckgo.com/?q=chrome+extension+tab+discard&ia=web
 https://www.google.com/search?q=playwright+headless+extension&num=20
-https://github.com/search?q=tab+suspender&type=repositories
+https://www.npmjs.com/search?q=tab%20suspender&ranking=popularity
 https://pypi.org/search/?q=readability
 
 # --- media ---
 https://www.youtube.com/watch?v=dQw4w9WgXcQ
+
+# --- long AND interactive: the only pages that reach rule 1 before rule 4 ---
+# (QA practice sites are under 120 words, so rule 4 fires first and rule 1 is never
+#  isolated. Probed 2026-09-15 with the real UA: all three load headless; the
+#  duckduckgo.com/html endpoint 403s in the runner and was dropped.)
+https://sqliteonline.com/
+https://editor.swagger.io/
+https://www.typescriptlang.org/play
