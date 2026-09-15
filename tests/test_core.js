@@ -168,9 +168,10 @@ import './test_storage.js';
 import { runSortingTests } from './test_sorting.js';
 await runSortingTests();
 
-// Test 12: Wiki & Modal UX (Highlighting, Typography, Dialog Markup)
+// Test 12: Closure Policy Engine
 import './test_closure_policy.js';
 
+// Wiki & Modal UX (Highlighting, Typography, Dialog Markup)
 import './test_app_unit.js';
 
 // Test 13: Local / OpenAI-compatible summarization tier

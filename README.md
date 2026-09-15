@@ -171,7 +171,10 @@ TabSum/
 │   │   └── db.js                  # IndexedDB interface (tombstoned soft-deletes, separate text store), multi-attribute sorting, fading, & settings
 │   ├── shared/
 │   │   ├── html.js                # Shared escapeHtml/highlightSearch/faviconUrl/fade-chip helpers for the app & options pages
-│   │   └── export.js               # Shared Markdown, Obsidian .zip, and JSON export/import helpers
+│   │   ├── export.js              # Shared Markdown, Obsidian .zip, and JSON export/import helpers
+│   │   ├── closure-policy.js      # Pure decision engine: sweep triage, per-tab safety tiers, close-vs-suspend, frame merging
+│   │   ├── fade.js                # Pure rule for when an unstarred note deletes itself
+│   │   └── with-timeout.js        # Generic promise-timeout helper
 │   ├── app/
 │   │   ├── index.html             # Knowledge Hub: one page for the Chrome Side Panel and the full view in a tab
 │   │   ├── app.js                 # Controller: search, filters, sort, cards, delete/undo, reader view, export, keyboard nav
@@ -185,6 +188,7 @@ TabSum/
     ├── test_export.js             # Unit tests for Markdown, Obsidian frontmatter, & JSON export
     ├── test_storage.js            # Unit tests for the IndexedDB layer (soft deletes, dedupe, fading, closed-today)
     ├── test_sorting.js            # Unit tests for multi-attribute sorting (newest, reading time, A-Z)
+    ├── test_closure_policy.js     # Unit tests for the closure policy engine (safety gates, tier classifier, AI-summary gate)
     ├── test_app_unit.js           # Unit & markup tests for the app page: reader typography, status badges, search highlight
     ├── test_app_ux.js             # Playwright tests for both layouts & surfaces: drawer, grid, filters, density, undo, reader, export
     ├── test_hybrid_mode.js        # Playwright tests for dual-tier adaptive archival & status chips
@@ -192,7 +196,11 @@ TabSum/
     ├── test_shortcuts.js          # Playwright tests for global and in-panel keyboard shortcuts
     ├── test_local_llm.js          # Unit tests for the OpenAI-compatible tier (streaming, <think> blocks, fallback)
     ├── test_wikipedia.js          # Multi-tab end-to-end Wikipedia extraction and restore stress test
+    ├── telemetry_ratio.js         # `npm run test:ratio` — live-network close/suspend ratio measurement against fixtures/corpus.txt
     ├── dogfood.js                 # Complete browser self-test and automated dogfooding suite
+    ├── fixtures/
+    │   └── corpus.txt             # Labeled URL corpus (`expect: close` / `expect: suspend`) for telemetry_ratio.js
+    ├── measure/                   # One-off measurement scripts backing specific FOLLOWUPS/ADR findings, not part of the test suite
     └── helpers/
         └── test-extension.js      # Builds a temp copy of the extension with test-only host permissions for Playwright
 ```
@@ -279,7 +287,7 @@ Verifies domain extraction, heuristic summarization, the local-LLM tier (against
 
 ```bash
 npm run test:unit     # every node-only suite; opens no window
-npm test              # just the core suite
+npm test              # same as test:unit
 npm run test:policy   # just the closure policy
 npm run test:storage  # just the storage layer
 ```

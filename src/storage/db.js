@@ -509,7 +509,7 @@ export const DEFAULT_SETTINGS = {
   timeoutMinutes: 60,
   archiveMode: 'hybrid', // 'hybrid' (smart adaptive) | 'discard' (soft suspension) | 'close' (auto-close)
   ignorePinnedTabs: true, // Never archive or suspend pinned tabs unless explicitly allowed
-  aiProvider: 'auto',     // 'auto' | 'prompt-api' | 'heuristic' | 'gemini-api'
+  aiProvider: 'auto',     // 'auto' | 'prompt-api' | 'heuristic' | 'gemini-api' | 'openai-compatible'
   geminiApiKey: '',
   openaiBaseUrl: 'http://localhost:11434/v1', // any OpenAI-compatible server; Ollama's default shown
   openaiModel: '',

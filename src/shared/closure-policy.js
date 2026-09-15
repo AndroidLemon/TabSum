@@ -54,7 +54,8 @@ const skip = (reason) => ({ action: 'skip', reason });
  * Returns one of:
  *   { action: 'skip', reason }
  *   { action: 're-evaluate-discarded', recordId, reason }  - hybrid tier 2; caller must load
- *       the record and run decideClosure, because the verdict depends on its summarySource.
+ *       the record and run canCloseWith(record.summarySource, settings): a suspended tab's
+ *       closureTier is already fixed, only the summary-source gate still needs checking.
  *   { action: 'capture', requiredOrigin, reason }  - requiredOrigin is null when the extension
  *       already holds <all_urls>; otherwise the caller must confirm that one origin first.
  */
