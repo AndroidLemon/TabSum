@@ -145,6 +145,16 @@ body {
   color: var(--accent-text);
 }
 
+.permission-card.granted {
+  background: var(--bg-card);
+  border-color: var(--border-color);
+  opacity: 0.6;
+}
+
+.permission-card.granted .permission-status {
+  color: var(--success);
+}
+
 /* Setting Rows */
 .setting-row {
   display: flex;
