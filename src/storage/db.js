@@ -9,7 +9,7 @@ import { AI_SUMMARY_SOURCES } from '../shared/closure-policy.js';
 import { getExpiry } from '../shared/fade.js';
 
 const DB_NAME = 'TabSumDB';
-const DB_VERSION = 2;
+const DB_VERSION = 1;
 const STORE_NAME = 'archived_tabs';
 const TEXT_STORE = 'tab_text'; // { id, cleanText } kept apart so list/stat queries never deserialize page text
 const MAX_TEXT_CHARS = 50000;
@@ -22,19 +22,15 @@ function getDB() {
     dbPromise = new Promise((resolve, reject) => {
       const request = indexedDB.open(DB_NAME, DB_VERSION);
 
+      // ponytail: no users yet, so no data migrations; write one when a schema change ships post-launch
       request.onupgradeneeded = () => {
         const db = request.result;
-        if (!db.objectStoreNames.contains(STORE_NAME)) {
-          const store = db.createObjectStore(STORE_NAME, { keyPath: 'id' });
-          store.createIndex('url', 'url', { unique: false });
-          store.createIndex('domain', 'domain', { unique: false });
-          store.createIndex('capturedAt', 'capturedAt', { unique: false });
-          store.createIndex('status', 'status', { unique: false });
-        }
-        // ponytail: no users yet, so no data migrations; write one when a schema change ships post-launch
-        if (!db.objectStoreNames.contains(TEXT_STORE)) {
-          db.createObjectStore(TEXT_STORE, { keyPath: 'id' });
-        }
+        const store = db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+        store.createIndex('url', 'url', { unique: false });
+        store.createIndex('domain', 'domain', { unique: false });
+        store.createIndex('capturedAt', 'capturedAt', { unique: false });
+        store.createIndex('status', 'status', { unique: false });
+        db.createObjectStore(TEXT_STORE, { keyPath: 'id' });
       };
 
       request.onsuccess = () => {
@@ -168,7 +164,7 @@ export async function saveArchivedTab(tabData) {
 /**
  * Query archived tabs with keyword search and filters.
  * Records come back without cleanText unless `includeText: true`; soft-deleted records
- * are hidden unless `includeDeleted: true`.
+ * are always hidden.
  */
 export async function getArchivedTabs(filters = {}) {
   const db = await getDB();
@@ -181,7 +177,6 @@ export async function getArchivedTabs(filters = {}) {
     favoriteOnly = false,
     closedSince = 0, // only records TabSum closed at/after this time
     view = '', // 'inbox' (never reopened) | 'reopened' | '' (all)
-    includeDeleted = false,
     includeText = false,
     sortBy = 'newest', // 'newest' | 'oldest' | 'reading-time-asc' | 'reading-time-desc' | 'title-asc' | 'domain' | 'expiring-soon'
     limit = 100,
@@ -197,7 +192,7 @@ export async function getArchivedTabs(filters = {}) {
   const weekAgo = Date.now() - 7 * DAY_MS;
 
   const passesFilters = (item) => {
-    if (item.deletedAt && !includeDeleted) return false;
+    if (item.deletedAt) return false;
     if (favoriteOnly && !item.isFavorite) return false;
     if (status && item.status !== status) return false;
     if (closedSince && !(item.closedAt >= closedSince)) return false;
@@ -218,12 +213,25 @@ export async function getArchivedTabs(filters = {}) {
     (item.summary?.bullets || []).some(b => b.toLowerCase().includes(normalizedQuery)) ||
     (item.summary?.tags || []).some(t => t.toLowerCase().includes(normalizedQuery));
 
+  // 'newest'/'oldest' are absent: those are served by the capturedAt index cursor direction.
+  const SORTS = {
+    'reading-time-asc': (a, b) => (a.readingTimeMinutes || 1) - (b.readingTimeMinutes || 1),
+    'reading-time-desc': (a, b) => (b.readingTimeMinutes || 1) - (a.readingTimeMinutes || 1),
+    'title-asc': (a, b) => (a.title || '').localeCompare(b.title || ''),
+    domain: (a, b) => (a.domain || '').localeCompare(b.domain || ''),
+    'expiring-soon': (a, b) => {
+      const x = getExpiry(a, fadeSettings) ?? Infinity; // never-fading notes last
+      const y = getExpiry(b, fadeSettings) ?? Infinity;
+      return x === y ? 0 : x - y; // Infinity - Infinity is NaN
+    }
+  };
+
   return new Promise((resolve, reject) => {
     const tx = db.transaction(needsText ? [STORE_NAME, TEXT_STORE] : STORE_NAME, 'readonly');
     const store = tx.objectStore(STORE_NAME);
 
     // Use native index cursor direction for temporal sorting
-    const isCustomSort = sortBy !== 'newest' && sortBy !== 'oldest';
+    const isCustomSort = Boolean(SORTS[sortBy]);
     const direction = sortBy === 'oldest' ? 'next' : 'prev';
     const request = store.index('capturedAt').openCursor(null, direction);
 
@@ -233,18 +241,7 @@ export async function getArchivedTabs(filters = {}) {
     const finish = () => {
       results = matches;
       if (isCustomSort) {
-        if (sortBy === 'reading-time-asc') {
-          matches.sort((a, b) => (a.readingTimeMinutes || 1) - (b.readingTimeMinutes || 1));
-        } else if (sortBy === 'reading-time-desc') {
-          matches.sort((a, b) => (b.readingTimeMinutes || 1) - (a.readingTimeMinutes || 1));
-        } else if (sortBy === 'title-asc') {
-          matches.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
-        } else if (sortBy === 'domain') {
-          matches.sort((a, b) => (a.domain || '').localeCompare(b.domain || ''));
-        } else if (sortBy === 'expiring-soon') {
-          const expiry = (t) => getExpiry(t, fadeSettings) ?? Infinity; // never-fading notes last
-          matches.sort((a, b) => (expiry(a) === expiry(b) ? 0 : expiry(a) - expiry(b)));
-        }
+        matches.sort(SORTS[sortBy]);
         results = matches.slice(0, limit);
       }
       if (includeText) {
@@ -257,15 +254,11 @@ export async function getArchivedTabs(filters = {}) {
     };
 
     const take = (item, cursor) => {
-      if (!isCustomSort) {
-        // Index-ordered queries stream and stop early once the page is full
-        matches.push(item);
-        if (matches.length >= limit) {
-          finish();
-          return;
-        }
-      } else {
-        matches.push(item);
+      matches.push(item);
+      // Index-ordered queries stream and stop early once the page is full
+      if (!isCustomSort && matches.length >= limit) {
+        finish();
+        return;
       }
       cursor.continue();
     };
@@ -300,9 +293,6 @@ export async function getArchivedTabs(filters = {}) {
   });
 }
 
-/**
- * Get a single tab by ID, including its cleanText
- */
 export async function getTabById(id) {
   const db = await getDB();
   return new Promise((resolve, reject) => {
@@ -417,9 +407,6 @@ export async function softDeleteTab(id) {
   });
 }
 
-/**
- * Undo a soft delete
- */
 export async function restoreDeletedTab(id) {
   return updateRecord(id, (record) => {
     delete record.deletedAt;
@@ -478,52 +465,26 @@ export async function purgeDeletedTabs(olderThanMs = 60 * 60 * 1000) {
 }
 
 /**
- * Permanently delete an archived tab
+ * Facet counts over the archive: `[{ [key]: value, count }]`, most frequent first.
+ * `valuesOf` returns the values one tab contributes.
  */
-export async function deleteArchivedTab(id) {
-  const db = await getDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction([STORE_NAME, TEXT_STORE], 'readwrite');
-    tx.objectStore(STORE_NAME).delete(id);
-    tx.objectStore(TEXT_STORE).delete(id);
-    onTxDone(tx, resolve, reject, () => true);
-  });
-}
-
-/**
- * Get aggregated tag counts across all archived tabs
- */
-export async function getAllTags() {
+async function countBy(valuesOf, key) {
   const tabs = await getArchivedTabs({ limit: 1000 });
-  const tagCounts = {};
+  const counts = {};
   for (const tab of tabs) {
-    const tags = tab.summary?.tags || [];
-    for (const tag of tags) {
-      const clean = tag.trim().replace(/^#/, '');
-      if (clean) {
-        tagCounts[clean] = (tagCounts[clean] || 0) + 1;
-      }
-    }
+    for (const value of valuesOf(tab)) counts[value] = (counts[value] || 0) + 1;
   }
-  return Object.entries(tagCounts)
-    .map(([tag, count]) => ({ tag, count }))
+  return Object.entries(counts)
+    .map(([value, count]) => ({ [key]: value, count }))
     .sort((a, b) => b.count - a.count);
 }
 
-/**
- * Get aggregated domain counts
- */
-export async function getAllDomains() {
-  const tabs = await getArchivedTabs({ limit: 1000 });
-  const domainCounts = {};
-  for (const tab of tabs) {
-    if (tab.domain) {
-      domainCounts[tab.domain] = (domainCounts[tab.domain] || 0) + 1;
-    }
-  }
-  return Object.entries(domainCounts)
-    .map(([domain, count]) => ({ domain, count }))
-    .sort((a, b) => b.count - a.count);
+export function getAllTags() {
+  return countBy(tab => (tab.summary?.tags || []).map(t => t.trim().replace(/^#/, '')).filter(Boolean), 'tag');
+}
+
+export function getAllDomains() {
+  return countBy(tab => (tab.domain ? [tab.domain] : []), 'domain');
 }
 
 /**
@@ -566,7 +527,6 @@ export const DEFAULT_SETTINGS = {
     'spotify.com',
     'netflix.com'
   ],
-  minTextLength: 150,
   closeRequiresAiSummary: true, // without an AI-written summary, suspend instead of closing
   fadeUnopenedDays: 30, // unstarred, never-reopened notes are deleted this long after capture (0 = never)
   fadeReopenedDays: 7 // unstarred reopened notes are deleted this long after the last reopen (0 = never)
@@ -593,21 +553,12 @@ export function extractDomain(url) {
   }
 }
 
-/**
- * Toggle favorite status on an archived tab
- * @param {string} id
- * @returns {Promise<Object|null>} Updated record or null
- */
 export async function toggleFavoriteTab(id) {
   return updateRecord(id, (record) => {
     record.isFavorite = !record.isFavorite;
   });
 }
 
-/**
- * Estimate storage usage of archived tabs (records + text) in IndexedDB
- * @returns {Promise<{ itemCount: number, byteEstimate: number }>}
- */
 export async function getStorageEstimate() {
   const db = await getDB();
   const encoder = new TextEncoder();
@@ -643,9 +594,6 @@ export async function getStorageEstimate() {
   });
 }
 
-/**
- * Clear all archived tab records from IndexedDB
- */
 export async function clearAllHistory() {
   const db = await getDB();
   return new Promise((resolve, reject) => {

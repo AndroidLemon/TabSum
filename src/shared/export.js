@@ -5,24 +5,14 @@
  */
 
 function toIsoDate(tab) {
-  try {
-    const raw = tab.capturedAt || tab.captured_at;
-    const d = raw ? new Date(raw) : new Date();
-    return isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
-  } catch {
-    return new Date().toISOString();
-  }
+  const d = new Date(tab.capturedAt || Date.now());
+  return isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
 }
 
 // Legacy/imported records can have non-string bullets/tags (numbers, null, etc.)
 // from hand-edited JSON or older schema versions — coerce/filter before string ops.
 function toSafeStringArray(value) {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter(item => item !== null && item !== undefined)
-    .map(item => (typeof item === 'string' ? item : String(item)))
-    .map(item => item.trim())
-    .filter(Boolean);
+  return Array.isArray(value) ? value.map(item => String(item ?? '').trim()).filter(Boolean) : [];
 }
 
 function getTags(tab) {
@@ -34,9 +24,7 @@ function getBullets(tab) {
 }
 
 function getReadingTime(tab) {
-  return Number.isFinite(tab.readingTimeMinutes)
-    ? tab.readingTimeMinutes
-    : (Number.isFinite(tab.reading_time_minutes) ? tab.reading_time_minutes : 1);
+  return Number.isFinite(tab.readingTimeMinutes) ? tab.readingTimeMinutes : 1;
 }
 
 /**
@@ -69,14 +57,13 @@ export function formatNoteSection(tab) {
 
 /**
  * Combined single-file Markdown export: one `##` section per note, no frontmatter.
- * @param {Array<Object>|Object} tabs
+ * @param {Array<Object>} tabs
  * @returns {string}
  */
 export function exportToMarkdown(tabs) {
-  const tabList = Array.isArray(tabs) ? tabs : (tabs ? [tabs] : []);
-  if (tabList.length === 0) return '';
+  if (tabs.length === 0) return '';
   const header = `# TabSum Knowledge Wiki Export\n*Exported on ${new Date().toLocaleString()}*\n\n`;
-  return header + tabList.map(formatNoteSection).join('\n\n---\n\n');
+  return header + tabs.map(formatNoteSection).join('\n\n---\n\n');
 }
 
 /**
@@ -115,22 +102,18 @@ ${bulletsContent}
 
 /**
  * Full structured JSON backup (includes cleanText when present on the records passed in).
- * @param {Array<Object>|Object} tabs
+ * @param {Array<Object>} tabs
  * @returns {string}
  */
 export function exportToJSON(tabs) {
-  const tabList = Array.isArray(tabs) ? tabs : (tabs ? [tabs] : []);
-  return JSON.stringify(tabList, null, 2);
+  return JSON.stringify(tabs, null, 2);
 }
 
 /**
  * Sanitize a note title into a filesystem-safe filename (no extension).
  */
 export function sanitizeFilename(name, maxLength = 100) {
-  let clean = String(name || '').replace(/[/\\:*?"<>|]/g, '').trim();
-  if (!clean) clean = 'untitled';
-  if (clean.length > maxLength) clean = clean.slice(0, maxLength).trim();
-  return clean || 'untitled';
+  return (String(name || '').replace(/[/\\:*?"<>|]/g, '').trim() || 'untitled').slice(0, maxLength).trim() || 'untitled';
 }
 
 /**
@@ -168,19 +151,8 @@ function crc32(bytes) {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-function writeUint16LE(arr, offset, val) {
-  arr[offset] = val & 0xff;
-  arr[offset + 1] = (val >>> 8) & 0xff;
-}
-
-function writeUint32LE(arr, offset, val) {
-  arr[offset] = val & 0xff;
-  arr[offset + 1] = (val >>> 8) & 0xff;
-  arr[offset + 2] = (val >>> 16) & 0xff;
-  arr[offset + 3] = (val >>> 24) & 0xff;
-}
-
-function dosDateTime(date = new Date()) {
+function dosDateTime() {
+  const date = new Date();
   const dosTime = ((date.getHours() & 0x1f) << 11) | ((date.getMinutes() & 0x3f) << 5) | ((date.getSeconds() >> 1) & 0x1f);
   const dosDate = (((date.getFullYear() - 1980) & 0x7f) << 9) | (((date.getMonth() + 1) & 0xf) << 5) | (date.getDate() & 0x1f);
   return { dosTime, dosDate };
@@ -204,33 +176,35 @@ export function buildZip(files) {
     const crc = crc32(dataBytes);
 
     const localHeader = new Uint8Array(30 + nameBytes.length);
-    writeUint32LE(localHeader, 0, 0x04034b50);
-    writeUint16LE(localHeader, 4, 20);
-    writeUint16LE(localHeader, 6, 0x0800); // bit 11: names are UTF-8
-    writeUint16LE(localHeader, 8, 0); // method 0 = STORE (no compression)
-    writeUint16LE(localHeader, 10, dosTime);
-    writeUint16LE(localHeader, 12, dosDate);
-    writeUint32LE(localHeader, 14, crc);
-    writeUint32LE(localHeader, 18, dataBytes.length);
-    writeUint32LE(localHeader, 22, dataBytes.length);
-    writeUint16LE(localHeader, 26, nameBytes.length);
-    writeUint16LE(localHeader, 28, 0);
+    const local = new DataView(localHeader.buffer);
+    local.setUint32(0, 0x04034b50, true);
+    local.setUint16(4, 20, true);
+    local.setUint16(6, 0x0800, true); // bit 11: names are UTF-8
+    local.setUint16(8, 0, true); // method 0 = STORE (no compression)
+    local.setUint16(10, dosTime, true);
+    local.setUint16(12, dosDate, true);
+    local.setUint32(14, crc, true);
+    local.setUint32(18, dataBytes.length, true);
+    local.setUint32(22, dataBytes.length, true);
+    local.setUint16(26, nameBytes.length, true);
+    local.setUint16(28, 0, true);
     localHeader.set(nameBytes, 30);
     localParts.push(localHeader, dataBytes);
 
     const centralHeader = new Uint8Array(46 + nameBytes.length);
-    writeUint32LE(centralHeader, 0, 0x02014b50);
-    writeUint16LE(centralHeader, 4, 20);
-    writeUint16LE(centralHeader, 6, 20);
-    writeUint16LE(centralHeader, 8, 0x0800); // bit 11: names are UTF-8
-    writeUint16LE(centralHeader, 10, 0);
-    writeUint16LE(centralHeader, 12, dosTime);
-    writeUint16LE(centralHeader, 14, dosDate);
-    writeUint32LE(centralHeader, 16, crc);
-    writeUint32LE(centralHeader, 20, dataBytes.length);
-    writeUint32LE(centralHeader, 24, dataBytes.length);
-    writeUint16LE(centralHeader, 28, nameBytes.length);
-    writeUint32LE(centralHeader, 42, offset);
+    const central = new DataView(centralHeader.buffer);
+    central.setUint32(0, 0x02014b50, true);
+    central.setUint16(4, 20, true);
+    central.setUint16(6, 20, true);
+    central.setUint16(8, 0x0800, true); // bit 11: names are UTF-8
+    central.setUint16(10, 0, true);
+    central.setUint16(12, dosTime, true);
+    central.setUint16(14, dosDate, true);
+    central.setUint32(16, crc, true);
+    central.setUint32(20, dataBytes.length, true);
+    central.setUint32(24, dataBytes.length, true);
+    central.setUint16(28, nameBytes.length, true);
+    central.setUint32(42, offset, true);
     centralHeader.set(nameBytes, 46);
     centralParts.push(centralHeader);
 
@@ -241,30 +215,28 @@ export function buildZip(files) {
   const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
 
   const eocd = new Uint8Array(22);
-  writeUint32LE(eocd, 0, 0x06054b50);
-  writeUint16LE(eocd, 8, files.length);
-  writeUint16LE(eocd, 10, files.length);
-  writeUint32LE(eocd, 12, centralSize);
-  writeUint32LE(eocd, 16, centralOffset);
+  const end = new DataView(eocd.buffer);
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, files.length, true);
+  end.setUint16(10, files.length, true);
+  end.setUint32(12, centralSize, true);
+  end.setUint32(16, centralOffset, true);
 
   const result = new Uint8Array(centralOffset + centralSize + eocd.length);
   let pos = 0;
-  for (const part of localParts) { result.set(part, pos); pos += part.length; }
-  for (const part of centralParts) { result.set(part, pos); pos += part.length; }
-  result.set(eocd, pos);
+  for (const part of [...localParts, ...centralParts, eocd]) { result.set(part, pos); pos += part.length; }
   return result;
 }
 
 /**
  * Build an Obsidian vault as a ZIP: one .md file per note (frontmatter + body).
  * Filenames are sanitized from the note title and deduped on collision.
- * @param {Array<Object>|Object} tabs
+ * @param {Array<Object>} tabs
  * @returns {Uint8Array}
  */
 export function exportToObsidianZip(tabs) {
-  const tabList = Array.isArray(tabs) ? tabs : (tabs ? [tabs] : []);
-  const baseNames = dedupeFilenames(tabList.map(tab => sanitizeFilename(tab.title || tab.url)));
-  const files = tabList.map((tab, i) => ({
+  const baseNames = dedupeFilenames(tabs.map(tab => sanitizeFilename(tab.title || tab.url)));
+  const files = tabs.map((tab, i) => ({
     name: `${baseNames[i]}.md`,
     content: formatStandaloneNote(tab)
   }));
@@ -281,9 +253,7 @@ export function exportToObsidianZip(tabs) {
  * @returns {boolean}
  */
 export function triggerDownload(content, filename, mimeType = 'text/plain') {
-  if (typeof window === 'undefined' || typeof document === 'undefined') {
-    return false;
-  }
+  if (typeof document === 'undefined') return false;
   try {
     const blob = new Blob([content], { type: mimeType });
     const url = URL.createObjectURL(blob);
