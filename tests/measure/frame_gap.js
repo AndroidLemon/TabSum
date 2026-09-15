@@ -103,8 +103,13 @@ async function measureOne(context, background, entry) {
       substantialIframes++;
       let childOriginPattern = null;
       try {
-        childOriginPattern = f.src ? originPatternFor(new URL(f.src, finalUrl).href) : null;
-      } catch { /* unparseable src (about:blank, javascript:, etc.) - treat as same-origin */ }
+        if (f.src) {
+          const childUrl = new URL(f.src, finalUrl);
+          if (childUrl.protocol === 'http:' || childUrl.protocol === 'https:') {
+            childOriginPattern = originPatternFor(childUrl.href);
+          }
+        }
+      } catch { /* non-http(s) frames such as about:blank and javascript: inherit the parent origin; unparseable src falls through to the same null. */ }
       if (childOriginPattern && childOriginPattern !== topOriginPattern) crossOriginSubstantial++;
     }
 

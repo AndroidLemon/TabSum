@@ -138,7 +138,10 @@ ad-supported news sites as a lower bound, not a stable number.
 **How many corpus pages have >= 1 substantial cross-origin iframe?**
 Run 2: 0 of 48 reachable pages. Run 1: 1 of 47 (bbc.com/news). Across both
 runs combined, exactly one corpus page ever showed a substantial cross-origin
-iframe: bbc.com/news, and only in run 1. This is a
+iframe: bbc.com/news, and only in run 1. (At the time of these runs the script
+counted a substantial `about:blank` frame as cross-origin; fixed since. Run 2's
+zero shows no such frame was counted, and run 1's two on bbc.com were ad
+frames with real `src` URLs, so the answer stands.) This is a
 rare event in the current 50-URL corpus, gated almost entirely by ad-network
 loading timing on ad-supported publisher pages, not something this corpus can
 put a stable base rate on.

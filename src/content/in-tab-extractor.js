@@ -396,6 +396,10 @@
         // nowhere -- and the host itself is rendered, so asking the parent is not
         // enough. (An unslotted light-DOM *element* needs no special case: it has
         // no box, so checkVisibility and the zero-box test already refuse it.)
+        // ponytail: only OPEN roots are visible here; a closed host reports
+        // shadowRoot === null, so its unslotted light-DOM fallback is harvested
+        // exactly as the old clone did. Upgrade path if a closed-root page ever
+        // matters: Range.getClientRects() per text node, at layout cost.
         if (parent && parent.shadowRoot && !node.assignedSlot) continue;
         if (parent && isRendered(parent)) append(groupFor(parent), node.nodeValue);
       } else {

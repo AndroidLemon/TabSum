@@ -312,6 +312,55 @@ function createMockServer() {
       return;
     }
 
+    // A DOM-only tool: a 2048-style game with no input, textarea, select,
+    // contenteditable, canvas, dialog, or application role anywhere on the
+    // page -- every telemetry count rule 1 checks is zero. Nothing here is an
+    // article either, so rule 4's word-count floor is the only thing standing
+    // between a discard and the game state living in these tile divs.
+    if (req.url === '/dom-tool') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>2048</title></head>
+        <body>
+          <div class="heading"><h1>2048</h1></div>
+          <div class="scores">
+            <div class="score-box">Score <span>128</span></div>
+            <div class="best-box">Best <span>2048</span></div>
+          </div>
+          <div class="grid">
+            <div class="grid-row">
+              <div class="tile tile-2">2</div>
+              <div class="tile tile-4">4</div>
+              <div class="tile tile-empty"></div>
+              <div class="tile tile-empty"></div>
+            </div>
+            <div class="grid-row">
+              <div class="tile tile-8">8</div>
+              <div class="tile tile-empty"></div>
+              <div class="tile tile-16">16</div>
+              <div class="tile tile-empty"></div>
+            </div>
+            <div class="grid-row">
+              <div class="tile tile-empty"></div>
+              <div class="tile tile-32">32</div>
+              <div class="tile tile-empty"></div>
+              <div class="tile tile-empty"></div>
+            </div>
+            <div class="grid-row">
+              <div class="tile tile-64">64</div>
+              <div class="tile tile-empty"></div>
+              <div class="tile tile-empty"></div>
+              <div class="tile tile-128">128</div>
+            </div>
+          </div>
+          <div class="game-footer"><p>Join the numbers to get the 2048 tile.</p></div>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
     // An editor at the top of a long page. The reader scrolls down to read; the
     // editor leaves the viewport but not the page, and must still be counted.
     if (req.url === '/scrolled-editor') {
@@ -638,13 +687,19 @@ async function runHardeningTests() {
         why: 'a select inside a submittable form is real data entry' },
       { route: '/designmode-editor', tier: 'suspend_only', dirty: true,
         expect: { appContainers: 1 },
-        why: 'document.designMode turns the whole iframe document into an editor, with no element for TEXT_EDITOR_SELECTOR to match' }
+        why: 'document.designMode turns the whole iframe document into an editor, with no element for TEXT_EDITOR_SELECTOR to match' },
+      { route: '/dom-tool', tier: 'suspend_only', dirty: false,
+        expect: { appContainers: 0, textareas: 0, selects: 0, passwords: 0, otherInputs: 0 },
+        reason: 'Short or low-confidence content',
+        why: 'a DOM-only tool with zero controls is held by rule 4 alone; if a harvest change ever pushes its chrome past 120 words it would close with the user\'s game state' }
     ];
 
     for (const testCase of telemetryCases) {
       const casePage = await context.newPage();
       await casePage.goto(`http://localhost:${PORT}${testCase.route}`);
-      await casePage.waitForLoadState('domcontentloaded');
+      // 'load' waits for iframes; domcontentloaded does not, and the
+      // designmode-editor case sets its state in a subframe.
+      await casePage.waitForLoadState('load');
 
       // Merged, same as the background service worker does, so a case whose
       // editor surface lives in a subframe (e.g. designmode-editor) is judged
@@ -655,9 +710,12 @@ async function runHardeningTests() {
         assert.strictEqual(caseResult.closureTelemetry.inputCounts[key], want,
           `${testCase.route}: ${key} should be ${want} — ${testCase.why}`);
       }
-      assert.strictEqual(
-        classifyClosureSafety({ ...caseResult.closureTelemetry, wordCount: caseResult.wordCount }).tier,
-        testCase.tier, `${testCase.route} must classify ${testCase.tier}`);
+      const classified = classifyClosureSafety({ ...caseResult.closureTelemetry, wordCount: caseResult.wordCount });
+      assert.strictEqual(classified.tier, testCase.tier, `${testCase.route} must classify ${testCase.tier}`);
+      if (testCase.reason !== undefined) {
+        assert.strictEqual(classified.reason, testCase.reason,
+          `${testCase.route}: reason should be "${testCase.reason}" — ${testCase.why}`);
+      }
       if (testCase.dirty !== undefined) {
         // The dirty check and the telemetry count share one editor list; before
         // they were reconciled, a draft in Ace or CodeMirror read as clean.

@@ -9,7 +9,10 @@
  *      contenteditable div.
  *   2. Type distinct text into each with Playwright (real keyboard events,
  *      so the browser's own form-restore heuristics see real user input).
- *   3. From the background page: chrome.tabs.discard(tabId).
+ *   3. Open a second page so the target tab is no longer the active tab
+ *      (chrome.tabs.discard() refuses an ACTIVE tab, and production only
+ *      ever discards inactive tabs), then from the background page:
+ *      chrome.tabs.discard(tabId).
  *   4. Wait for tabs.get(id).discarded === true.
  *   5. chrome.tabs.update(id, { active: true }) and wait for the page to load.
  *   6. Read back the three values from the reactivated tab.
@@ -81,74 +84,85 @@ async function runCase(context, background, route, label) {
 
   const beforeUrl = pw.url();
 
-  const discardResult = await background.evaluate(async (targetUrl) => {
-    const tabs = await chrome.tabs.query({});
-    const target = tabs.find((t) => t.url === targetUrl);
-    if (!target) return { error: 'tab not found' };
+  // chrome.tabs.discard() refuses an ACTIVE tab, and production only ever
+  // discards inactive tabs -- open a second page so the target is no longer
+  // the active tab before asking the background to discard it.
+  const decoy = await context.newPage();
+  await decoy.goto('about:blank');
+
+  try {
+    const discardResult = await background.evaluate(async (targetUrl) => {
+      const tabs = await chrome.tabs.query({});
+      const target = tabs.find((t) => t.url === targetUrl);
+      if (!target) return { error: 'tab not found' };
+      if (target.active) return { error: 'target tab is still active; discard() would refuse it' };
+      try {
+        const discarded = await chrome.tabs.discard(target.id);
+        return { discarded };
+      } catch (err) {
+        return { error: String(err && err.message || err) };
+      }
+    }, beforeUrl);
+
+    console.log(`  [${label}] chrome.tabs.discard() result:`, JSON.stringify(discardResult));
+
+    if (!discardResult || discardResult.error || !discardResult.discarded) {
+      return { label, before, error: discardResult?.error || 'discard() returned falsy (refused)' };
+    }
+
+    const discardedId = discardResult.discarded.id;
+
+    // Confirm the tab is actually reported discarded before reactivating.
+    const confirmedDiscarded = await background.evaluate(async (id) => {
+      for (let i = 0; i < 20; i++) {
+        const t = await chrome.tabs.get(id).catch(() => null);
+        if (t?.discarded) return true;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      return false;
+    }, discardedId);
+    console.log(`  [${label}] confirmed discarded before reactivate: ${confirmedDiscarded}`);
+
+    if (!confirmedDiscarded) {
+      return { label, before, error: 'tabs.get never reported discarded:true within 5s; not reactivating' };
+    }
+
+    // Reactivate. Playwright's `pw` Page handle may or may not survive the
+    // renderer unload/reload cycle, so re-find the page by matching context
+    // pages after activation rather than trusting the old handle blindly.
+    await background.evaluate(async (id) => {
+      await chrome.tabs.update(id, { active: true });
+    }, discardedId);
+
+    await new Promise((r) => setTimeout(r, 1500));
+
+    let reactivatedPage = pw;
+    if (pw.isClosed()) {
+      reactivatedPage = context.pages().find((p) => !p.isClosed() && p.url().includes(route)) || null;
+    }
+    if (!reactivatedPage) {
+      return { label, before, error: 'could not find reactivated page (original Page handle closed, no replacement found)' };
+    }
+
     try {
-      const discarded = await chrome.tabs.discard(target.id);
-      return { discarded };
+      await reactivatedPage.waitForLoadState('load', { timeout: 10000 });
     } catch (err) {
-      return { error: String(err && err.message || err) };
+      console.log(`  [${label}] waitForLoadState after reactivate threw: ${err.message}`);
     }
-  }, beforeUrl);
+    await new Promise((r) => setTimeout(r, 500));
 
-  console.log(`  [${label}] chrome.tabs.discard() result:`, JSON.stringify(discardResult));
-
-  if (!discardResult || discardResult.error || !discardResult.discarded) {
-    return { label, before, error: discardResult?.error || 'discard() returned falsy (refused)' };
-  }
-
-  const discardedId = discardResult.discarded.id;
-
-  // Confirm the tab is actually reported discarded before reactivating.
-  const confirmedDiscarded = await background.evaluate(async (id) => {
-    for (let i = 0; i < 20; i++) {
-      const t = await chrome.tabs.get(id).catch(() => null);
-      if (t?.discarded) return true;
-      await new Promise((r) => setTimeout(r, 250));
+    let after;
+    try {
+      after = await readValues(reactivatedPage);
+    } catch (err) {
+      return { label, before, error: `readValues after reactivate threw: ${err.message}` };
     }
-    return false;
-  }, discardedId);
-  console.log(`  [${label}] confirmed discarded before reactivate: ${confirmedDiscarded}`);
 
-  if (!confirmedDiscarded) {
-    return { label, before, error: 'tabs.get never reported discarded:true within 5s; not reactivating' };
+    await reactivatedPage.close().catch(() => {});
+    return { label, before, after };
+  } finally {
+    await decoy.close().catch(() => {});
   }
-
-  // Reactivate. Playwright's `pw` Page handle may or may not survive the
-  // renderer unload/reload cycle, so re-find the page by matching context
-  // pages after activation rather than trusting the old handle blindly.
-  await background.evaluate(async (id) => {
-    await chrome.tabs.update(id, { active: true });
-  }, discardedId);
-
-  await new Promise((r) => setTimeout(r, 1500));
-
-  let reactivatedPage = pw;
-  if (pw.isClosed()) {
-    reactivatedPage = context.pages().find((p) => !p.isClosed() && p.url().includes(route)) || null;
-  }
-  if (!reactivatedPage) {
-    return { label, before, error: 'could not find reactivated page (original Page handle closed, no replacement found)' };
-  }
-
-  try {
-    await reactivatedPage.waitForLoadState('load', { timeout: 10000 });
-  } catch (err) {
-    console.log(`  [${label}] waitForLoadState after reactivate threw: ${err.message}`);
-  }
-  await new Promise((r) => setTimeout(r, 500));
-
-  let after;
-  try {
-    after = await readValues(reactivatedPage);
-  } catch (err) {
-    return { label, before, error: `readValues after reactivate threw: ${err.message}` };
-  }
-
-  await reactivatedPage.close().catch(() => {});
-  return { label, before, after };
 }
 
 async function main() {
@@ -196,6 +210,12 @@ async function main() {
       console.log(`  contentEditable:  typed="${r.before.contentEditable}" after="${r.after.contentEditable}" survived=${survived('contentEditable')}`);
     }
     console.log('\nDone.');
+
+    const errored = results.filter((r) => r.error);
+    if (errored.length > 0) {
+      console.log(`\nInconclusive: ${errored.length} of ${results.length} cases produced no survival data.`);
+      process.exitCode = 1;
+    }
   } finally {
     await context?.close().catch(() => {});
     server.close();
