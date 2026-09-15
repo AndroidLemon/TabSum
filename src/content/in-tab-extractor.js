@@ -202,6 +202,7 @@
     // Upgrade path: snapshot control values at document_idle and diff against those.
     // A control in the <summary> itself is rendered even when the details is closed, so it
     // is exempt.
+    // File inputs are never exempt: a script cannot pick a file, so a selection is always the user's.
     const isFoldedAway = (el) => Boolean(el.closest('details:not([open])')) && !el.closest('summary');
 
     const valueTypes = new Set(['text', 'email', 'url', 'tel', 'password', 'number', '',
@@ -209,7 +210,7 @@
     const inputs = queryAllDeep('input');
     for (const input of inputs) {
       const type = (input.getAttribute('type') || 'text').toLowerCase();
-      if (input.readOnly || input.disabled || isSearchInput(input) || isFoldedAway(input)) {
+      if (input.readOnly || input.disabled || isSearchInput(input) || (type !== 'file' && isFoldedAway(input))) {
         continue;
       }
       // Direct comparison, so clearing a prefilled field counts as an edit too

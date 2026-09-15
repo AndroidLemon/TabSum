@@ -504,14 +504,14 @@ async function processTabArchival(tab, settings, lastActiveTime) {
       // Soft discard: Inject sleeping tab indicator 💤 into title before discarding
       let addedPrefix = false;
       try {
-        const [res] = await chrome.scripting.executeScript({
+        const [res] = await withTimeout(chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: () => {
             if (document.title.startsWith('💤 ')) return false;
             document.title = '💤 ' + document.title;
             return true;
           }
-        });
+        }), EXTRACT_TIMEOUT_MS, 'Title injection');
         addedPrefix = res?.result === true;
       } catch (titleErr) {
         console.debug('[TabSum] Could not prefix title with sleeping symbol:', titleErr);
@@ -520,10 +520,10 @@ async function processTabArchival(tab, settings, lastActiveTime) {
       const discardedTab = await chrome.tabs.discard(tab.id).catch(() => null);
       if (!discardedTab) {
         if (addedPrefix) {
-          await chrome.scripting.executeScript({
+          await withTimeout(chrome.scripting.executeScript({
             target: { tabId: tab.id },
             func: () => { document.title = document.title.replace(/^💤 /, ''); }
-          }).catch(() => {});
+          }), EXTRACT_TIMEOUT_MS, 'Title injection').catch(() => {});
         }
         await revertIfStillOpen(tab.id, record.id, false, 'Chrome refused to suspend this tab; summary saved, tab left open');
         return;

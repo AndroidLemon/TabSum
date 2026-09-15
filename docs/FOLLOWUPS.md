@@ -6,7 +6,7 @@ is a bug that ships broken; the leak gate is 0 of 21 and close recall is 91.4%
 (`logs/baseline-followups1.md`). Ordered within each section by how likely the
 trigger is to fire during dogfooding.
 
-Last updated 2026-09-15, after follow-ups round 1 (items 1, 2, 9, 14, 19, 20 done; item 23 is 14's residual).
+Last updated 2026-09-15, after follow-ups round 1 (items 1, 2, 9, 14, 19, 20 done; items 23 and 24 are residuals of 14 and 9).
 
 ## Summariser
 
@@ -64,6 +64,17 @@ Last updated 2026-09-15, after follow-ups round 1 (items 1, 2, 9, 14, 19, 20 don
    Recorded here so it is not re-litigated without a real page. No work.
 
 ## Closure policy
+
+24. **The closed-details exemption loses a draft typed, then collapsed.**
+    `checkIsDirty` treats a value-bearing control under a closed `<details>`
+    as folded-away page content, which is what pkg.go.dev's script-filled
+    example boxes are. A user who opens the section, types, and collapses it
+    again looks identical at sweep time. Named as the ceiling in the
+    `ponytail:` comment at the rule. Upgrade path: a load-time content
+    script that snapshots control values (or records `input` events) so the
+    sweep can diff against what the page shipped. Needs a manifest change.
+    Raised by Copilot on PR #6. Small to medium.
+    *Trigger:* a lost edit inside a collapsible section.
 
 10. **Cross-origin frame gap rule.**
     A substantial cross-origin iframe that `executeScript` cannot reach could
