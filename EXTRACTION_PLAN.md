@@ -111,3 +111,28 @@ three pages above without any must-suspend page moving.
   right answer for HN might be a corpus label change, not an extractor change.
 - The 25% recovery threshold in Step 1 is a guess, chosen to be obviously
   exceeded by the three known-bad pages. It is a reporting aid, not a gate.
+
+---
+
+## Outcome (2026-09-14, branch extraction-v1)
+
+| | Close recall | Leaks | HN /news | torvalds/linux |
+| :--- | ---: | ---: | ---: | ---: |
+| Baseline (Step 1 metric) | 82.9% | 0 | 0 words | 19 words |
+| Step 2, live DOM | 80.0% | 0 | 0 | 10 |
+| Step 3, wide selector | **85.7%** | **0** | **681** | **794** |
+
+- **Step 1** confirmed the diagnosis and exposed a second one: a dozen pages
+  scored over 100% recall, up to 2153% on codepen, because the detached
+  clone's innerText was textContent and counted hidden text.
+- **Step 2** removed that. The one page it flipped, nodejs/node pull 50000,
+  had been closing on a collapsed commit list; its visible prose lives in
+  timeline divs, which is Step 3's job.
+- **Step 3** brought HN and the repo landing page to 100% and 84% recall and
+  both now close. No page is over 100% any more. Known ceiling: a semantic
+  block that contains a nested block loses its own preamble text (nodejs.org
+  fs.html 92.7% -> 81.1%, still closes). lobste.rs fell to 35% because its
+  stories are short fragments under a floored li; it still closes.
+- **Step 4**: option 1, rule 4 stays on word count. See ADR 0001. Floor
+  0.77 -> 0.80. The two pages still held (HN item?id=1 at 72 words, the PR at
+  107) are held correctly: neither has an article in it.

@@ -1,0 +1,14 @@
+---
+name: coder-local
+description: Single-file, mechanical, pattern-matched tasks only — boilerplate, doc comments, a rename/refactor matching an exact existing pattern. Never multi-file reasoning.
+model: REPLACE_WITH_LOCAL_MODEL_ID
+tools: [Read, Edit, Write, Grep, Glob]
+---
+
+Only rename this to coder-local.md once a local model is actually confirmed running
+in this repo's environment (e.g. via Ollama/LM Studio). Do not assume it's available.
+
+Fallback order if this model is unreachable when invoked (edit to match this repo):
+1. coder-local (this file) — local model, zero marginal cost
+2. coder-low (haiku) — cheapest hosted fallback
+3. coder-mid (sonnet) — if the task turns out to need cross-file reasoning

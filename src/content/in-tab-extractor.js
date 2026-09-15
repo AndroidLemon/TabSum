@@ -27,10 +27,18 @@
   // editors park off-screen capture textareas, docs sites ship collapsed menus, and
   // clipboard shims hide a textarea per code block. The layout engine already knows
   // which is which, so ask it instead of guessing from value length.
-  function isVisibleControl(el) {
+  //
+  // `options.checkOpacity` defaults to true, so every control path is unchanged.
+  // The prose harvest passes false: scroll-reveal pages animate paragraphs from
+  // opacity:0, and a background tab never scrolls, so an opacity gate would drop
+  // everything below the first screen. Written defensively rather than with a
+  // destructuring default because this function is also passed bare to
+  // Array#filter/#some, which hands it the array index as a second argument.
+  function isVisibleControl(el, options) {
+    const checkOpacity = !(options && options.checkOpacity === false);
     let rendered;
     try {
-      rendered = el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+      rendered = el.checkVisibility({ checkOpacity, checkVisibilityCSS: true });
     } catch {
       // checkVisibility landed in Chrome 105. offsetParent is null for
       // position:fixed even when the element is plainly on screen, so a fixed
@@ -160,6 +168,22 @@
     return SEARCH_INPUT_NAMES.has((input.getAttribute('name') || '').toLowerCase());
   }
 
+  // designMode makes the whole document editable rather than a single element,
+  // which is how classic TinyMCE/CKEditor turn an iframe into an editor
+  // surface -- that iframe is a SUBFRAME, so the check is scoped to one.
+  // Copy-enabler browser extensions set designMode='on' on the TOP document
+  // of every page the user visits (to defeat copy-paste blockers), which
+  // would otherwise mark every tab dirty regardless of what it contains.
+  // TEXT_EDITOR_SELECTOR only ever matches elements, so it can never see this.
+  //
+  // One shared source, returning the surface as a list so the dirty check and
+  // the telemetry count read the same rule instead of drifting apart.
+  function designModeBody() {
+    return window !== window.top && document.designMode === 'on' && document.body
+      ? [document.body]
+      : [];
+  }
+
   // 1. Zero-Loss Safety Check: Inspect for dirty form inputs, rich editors, or active media
   function checkIsDirty() {
     // Compare each user-editable control with its page-load default (search bars excluded).
@@ -195,7 +219,7 @@
     // Check rich-text editors, contenteditables, and modern web app editors.
     // Same list the telemetry counts, so an editor that marks the tab a tool can
     // never be one the zero-loss guard has not heard of.
-    const editables = queryAllDeep(TEXT_EDITOR_SELECTOR);
+    const editables = [...queryAllDeep(TEXT_EDITOR_SELECTOR), ...designModeBody()];
     for (const el of editables) {
       if (el.innerText && el.innerText.trim().length > 5) {
         return { isDirty: true, reason: 'Unsaved rich-text editor draft detected' };
@@ -262,37 +286,139 @@
     }
   }
 
+  // Elements a prose block must not be found inside. Hoisted so the list is
+  // defined once rather than rebuilt (or re-queried) per extraction, and shared
+  // by nothing else today — it is the same set extractCleanText used to strip
+  // from a detached clone, now checked live via closest() instead.
+  const NOISE_SELECTOR = 'script, style, noscript, nav, header, footer, aside, form, svg, iframe, ' +
+    '.ad, .ads, .advertisement, #cookie-banner, .cookie-notice, .consent-modal, ' +
+    '.social-share, .newsletter-signup, .sidebar, [role="banner"], [role="navigation"]';
+
+  // The prose harvest walks TEXT NODES, not elements, and groups each node by
+  // its nearest block ancestor. Every text node is therefore counted exactly
+  // once by construction: there is no containment rule, no leaf rule, and no
+  // ancestor-coverage walk, because no two groups can ever claim the same node.
+  // The element-based harvest this replaces had to disqualify a block that held
+  // a nested block, which silently dropped that block's OWN text -- Hacker News
+  // writes a comment as `<div class="commtext">first<p>second<p>third</div>`, so
+  // the first paragraph of most comments was lost. Grouping by nearest ancestor
+  // keeps "first" under the div and "second"/"third" under their own <p>s.
+  //
+  // The rendered test is per text node (asked of its parent element, cached),
+  // so a visible <span> inside a visibility:hidden <p> still contributes while
+  // the hidden text around it does not. It deliberately does NOT check opacity:
+  // scroll-reveal pages start paragraphs at opacity:0 and a background tab never
+  // scrolls, so an opacity gate would drop everything below the first screen.
+  // The zero-box and off-screen-parking tests stay -- that is what keeps a
+  // clipboard shim's textarea and a paragraph parked at left:-9999px out.
+  const CONTAINER_SELECTOR = 'article, main, [role="main"], .post-content, .article-content, .entry-content';
+  // Every tag that starts a new group. span/a/b/em/code and friends are absent
+  // on purpose: they are inline, so their text joins the group of whatever
+  // block they sit in rather than splitting a sentence in half.
+  const GROUP_SELECTOR = 'h1, h2, h3, h4, h5, h6, p, blockquote, li, td, th, dd, dt, div, figcaption, summary';
+  // td/th/dd/dt/p/figcaption/summary hold legitimately short content (HN
+  // titles, table cells, definition terms, image captions, <details> labels).
+  // Inherited via closest(), not matched on the group's own tag: a wrapper
+  // `<td><div class="d-flex">opened this issue</div></td>` is still a cell.
+  // Everything else is floored at 20 characters, which is where nav lists,
+  // inline labels and layout wrappers produce their short noise.
+  const NO_FLOOR_SELECTOR = 'td, th, dd, dt, p, figcaption, summary';
+  const BOILERPLATE_REGEX = /^(cookie|privacy policy|terms|sign in|subscribe|all rights reserved)/i;
+
   // 3. Clean Content Extraction (Readability heuristic)
   function extractCleanText() {
     if (!document.body) return '';
-    // Clone body so we don't modify the real page
-    const clone = document.body.cloneNode(true);
 
-    // Remove noise elements
-    const unwanted = clone.querySelectorAll(
-      'script, style, noscript, nav, header, footer, aside, form, svg, iframe, ' +
-      '.ad, .ads, .advertisement, #cookie-banner, .cookie-notice, .consent-modal, ' +
-      '.social-share, .newsletter-signup, .sidebar, [role="banner"], [role="navigation"]'
+    // Walk the LIVE document instead of a detached clone. A clone is cheap to
+    // build but costs layout, which is exactly what tells prose from chrome:
+    // on a detached node, checkVisibility/getBoundingClientRect have nothing
+    // to answer from, and clone.innerText === clone.textContent (measured) —
+    // so hidden nav text leaked straight into the harvest.
+    //
+    // The container is picked from the PRUNED set, not the raw document order:
+    // `<aside class="sidebar"><article>teaser</article></aside>` sitting above
+    // the real `.entry-content` would otherwise win and the harvest would be
+    // the teaser alone.
+    //
+    // The candidate must also be RENDERED: responsive sites ship a mobile/desktop
+    // pair of duplicate containers and hide one with `display:none`, so a hidden
+    // `<article>` that precedes the real `.entry-content` in document order would
+    // otherwise win outright -- every text node under it then fails the per-node
+    // rendered test and the harvest comes back empty.
+    const renderedCache = new WeakMap();
+    function isRendered(el) {
+      if (renderedCache.has(el)) return renderedCache.get(el);
+      const result = isVisibleControl(el, { checkOpacity: false });
+      renderedCache.set(el, result);
+      return result;
+    }
+    const root = Array.from(document.querySelectorAll(CONTAINER_SELECTOR))
+      .find((el) => !el.closest(NOISE_SELECTOR) && isRendered(el)) || document.body;
+
+    // Insertion order is DOM order of each group's first text node, so the
+    // blocks come out in reading order without a sort.
+    const groups = new Map();
+
+    // closest() may climb past the root (root itself need not be a group tag),
+    // so anything it finds outside the root falls back to the root's own group.
+    function groupFor(el) {
+      const group = el && el.closest(GROUP_SELECTOR);
+      return group && root.contains(group) ? group : root;
+    }
+    function append(groupEl, text) {
+      groups.set(groupEl, (groups.get(groupEl) || '') + text);
+    }
+
+    const walker = document.createTreeWalker(
+      root,
+      NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
+      {
+        acceptNode(node) {
+          if (node.nodeType === Node.TEXT_NODE) return NodeFilter.FILTER_ACCEPT;
+          // REJECT skips the whole subtree, which is why no per-node
+          // closest(NOISE_SELECTOR) is needed below.
+          if (node.matches(NOISE_SELECTOR)) return NodeFilter.FILTER_REJECT;
+          // <br> carries no text but does separate words; accept it so the
+          // loop can note it, and skip every other element into its children.
+          if (node.tagName === 'BR') return NodeFilter.FILTER_ACCEPT;
+          return NodeFilter.FILTER_SKIP;
+        }
+      }
     );
-    unwanted.forEach(el => el.remove());
 
-    // Locate primary content container if present
-    const article = clone.querySelector('article, main, [role="main"], .post-content, .article-content, .entry-content') || clone;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const parent = node.parentElement;
+        // A text node sitting DIRECTLY inside a shadow host is on the page only
+        // if the shadow root slots it. GitHub writes
+        // `<relative-time>Sep 14, 2026</relative-time>` and renders "2 days ago"
+        // from its shadow root instead, leaving the light-DOM date laid out
+        // nowhere -- and the host itself is rendered, so asking the parent is not
+        // enough. (An unslotted light-DOM *element* needs no special case: it has
+        // no box, so checkVisibility and the zero-box test already refuse it.)
+        // ponytail: only OPEN roots are visible here; a closed host reports
+        // shadowRoot === null, so its unslotted light-DOM fallback is harvested
+        // exactly as the old clone did. Upgrade path if a closed-root page ever
+        // matters: Range.getClientRects() per text node, at layout cost.
+        if (parent && parent.shadowRoot && !node.assignedSlot) continue;
+        if (parent && isRendered(parent)) append(groupFor(parent), node.nodeValue);
+      } else {
+        // A <br>: "Line one<br>Line two" must stay two words, not one.
+        append(groupFor(node.parentElement), ' ');
+      }
+    }
 
-    // Collect meaningful text blocks
     const blocks = [];
-    const elements = article.querySelectorAll('h1, h2, h3, h4, h5, h6, p, blockquote, li');
-
-    for (const el of elements) {
-      const text = el.innerText ? el.innerText.trim() : '';
-      // Exclude very short snippets and navigation boilerplate
-      if (text.length > 20 && !/^(cookie|privacy policy|terms|sign in|subscribe|all rights reserved)/i.test(text)) {
+    for (const [groupEl, raw] of groups) {
+      const text = raw.replace(/\s+/g, ' ').trim();
+      // A lone "·" bullet cell or single glyph still shouldn't count as a word.
+      const floor = groupEl.closest(NO_FLOOR_SELECTOR) ? 1 : 20;
+      if (text.length > floor && !BOILERPLATE_REGEX.test(text)) {
         blocks.push(text);
       }
     }
 
-    const fullText = blocks.join('\n\n');
-    return fullText;
+    return blocks.join('\n\n');
   }
 
   // Subframes contribute unsaved work and controls; mergeFrameExtractions throws
@@ -324,7 +450,8 @@
         textareas: queryAllDeep('textarea').filter(isVisibleControl).length,
         selects: queryAllDeep('select').filter(s => isVisibleControl(s) && isInMeaningfulForm(s)).length,
         passwords: passwordInputs.length,
-        appContainers: queryAllDeep(EDITOR_SURFACE_SELECTOR).filter(isVisibleControl).length,
+        appContainers: [...queryAllDeep(EDITOR_SURFACE_SELECTOR), ...designModeBody()]
+          .filter(isVisibleControl).length,
         otherInputs: otherInputs.length
       },
       // A page built around a player is not a reading page: its state is playback

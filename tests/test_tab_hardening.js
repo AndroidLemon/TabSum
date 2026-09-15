@@ -18,6 +18,93 @@ import { buildTestExtension, extensionLaunchOptions } from './helpers/test-exten
 const EXTENSION_PATH = buildTestExtension();
 const USER_DATA_DIR = path.resolve('./tests/.playwright_user_data_hardening');
 
+// Word fixtures for the /hidden-prose route (Step 2 of EXTRACTION_PLAN.md).
+// Every paragraph gets its own unique word prefix so the test can assert a
+// hidden/off-screen/nav word never appears in cleanText without relying on
+// any particular boilerplate phrase.
+function makeWords(prefix, count) {
+  return Array.from({ length: count }, (_, i) => `${prefix}${i}`).join(' ');
+}
+const VISIBLE_PARAGRAPHS = [
+  makeWords('visible0-', 30),
+  makeWords('visible1-', 30),
+  makeWords('visible2-', 30)
+];
+const HIDDEN_DIV_PARAGRAPHS = [
+  makeWords('hiddendiv0-', 20),
+  makeWords('hiddendiv1-', 20),
+  makeWords('hiddendiv2-', 20)
+];
+const OFFSCREEN_PARAGRAPH = makeWords('offscreen-', 15);
+const NAV_PARAGRAPH = makeWords('navword-', 6);
+
+// Fixtures for the /table-prose route (Step 3 of EXTRACTION_PLAN.md), modelled
+// on HN: short <td> titles (must be harvested despite being under 20 chars)
+// and <span class="commtext"> comments nested inside a <td> (must be counted
+// once, via the <td>, not a second time via the <span>). Titles are kept
+// under 20 chars on purpose -- that is the exact case the dropped floor fixes.
+const TABLE_TITLES = [makeWords('ttl0-', 2), makeWords('ttl1-', 2)];
+const TABLE_COMMENTS = [makeWords('cmt0-', 6), makeWords('cmt1-', 6)];
+// A <p> nested two <div>s deep must be counted exactly once, not once per
+// wrapping <div> -- the double-counting the leaf/containment rule exists to fix.
+const NESTED_PARAGRAPH = makeWords('nested-', 25);
+
+// Fixtures for the /nested-spans route: a <p><span><span>...</span></span></p>
+// chain must be counted once, via the <p> that is the spans' nearest block
+// ancestor; a visibility:visible <span> inside a visibility:hidden <p> must
+// still be harvested, since the rendered test is asked of each text node's own
+// parent; a <figcaption> must be harvested under the floor-free tag list; and a
+// <p> inside a CLOSED <details> must not be rendered at all.
+const NESTED_SPAN_WORDS = makeWords('nspan-', 12);
+const HIDDEN_P_VISIBLE_SPAN_WORDS = makeWords('vspan-', 10);
+const FIGCAPTION_WORDS = makeWords('figcap-', 6);
+const SUMMARY_CAPTION = 'short cap';
+const CLOSED_DETAILS_WORDS = makeWords('detailshidden-', 8);
+
+// A top-level page's designMode must never be treated as an editor draft --
+// only copy-enabler extensions set it there. A paragraph long enough to be
+// unambiguous prose, not an editor draft.
+const DESIGNMODE_TOP_PARAGRAPH = makeWords('dmtop-', 30);
+
+// Fixtures for the /text-nodes route (round-2 rewrite: the harvest walks text
+// nodes and groups each by its nearest block ancestor).
+//   A/B/C model a Hacker News comment, `<div class="commtext">A<p>B<p>C</div>`:
+//     the element harvest disqualified the div because of the nested <p>s and
+//     lost A entirely. All three must count, each exactly once.
+//   REVEAL is a scroll-reveal paragraph parked at opacity:0 -- a background tab
+//     never scrolls, so the prose gate must not check opacity.
+//   SIDEBAR sits in `<aside class="sidebar"><article>` BEFORE the real
+//     .entry-content, so the container pick must skip it (it is noise) rather
+//     than take the first match in document order and harvest the teaser alone.
+//   BR_LINES: "Line one<br>Line two" is four words, not three.
+//   CELL_WRAPPER: a wrapper <div> inside a <td> inherits the cell's no-floor.
+const TEXTNODE_A = makeWords('tna-', 10);
+const TEXTNODE_B = makeWords('tnb-', 10);
+const TEXTNODE_C = makeWords('tnc-', 10);
+const TEXTNODE_REVEAL = makeWords('tnreveal-', 10);
+const TEXTNODE_SIDEBAR = makeWords('tnsidebar-', 10);
+const TEXTNODE_BR_LINES = 'Line one Line two';
+const TEXTNODE_CELL_WRAPPER = 'opened this issue';
+// A text node directly inside a shadow host that does not slot it is laid out
+// nowhere -- GitHub's `<relative-time>Sep 14, 2026</relative-time>` renders
+// "2 days ago" from its shadow root instead -- so it must not reach cleanText.
+const TEXTNODE_UNSLOTTED = makeWords('tnunslotted-', 10);
+// A hidden `<article style="display:none">` sitting BEFORE the real
+// `.entry-content` -- the responsive mobile/desktop duplicate-container shape.
+// Without the "root must also be rendered" fix this wins the container pick
+// outright, every text node under it fails the rendered test, and the whole
+// harvest comes back empty.
+const TEXTNODE_HIDDEN_ARTICLE = makeWords('tnhiddenart-', 12);
+// A visible <div> whose own text must count even though it also holds a
+// hidden nested <div> -- the shape the old element-level hasBlockingDescendant
+// check lost; the text-node walk keeps it by construction.
+const TEXTNODE_VISIBLE_PARENT = makeWords('tnvisparent-', 8);
+const TEXTNODE_HIDDEN_CHILD = makeWords('tnhiddenchild-', 6);
+// A visible <p> whose own words count, holding an inline `<span class="ad">`
+// whose words must not -- the TreeWalker REJECTs NOISE_SELECTOR subtrees.
+const TEXTNODE_AD_PARAGRAPH = makeWords('tnadpara-', 8);
+const TEXTNODE_AD_SPAN = makeWords('tnadspan-', 5);
+
 // Mock server serving test pages for dirty checks and lifecycle testing
 function createMockServer() {
   const server = http.createServer((req, res) => {
@@ -177,6 +264,36 @@ function createMockServer() {
       return;
     }
 
+    // A classic TinyMCE/CKEditor-style editor: no element carries the editing
+    // role, the whole iframe document does via document.designMode = 'on'.
+    if (req.url === '/designmode-editor') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Newsletter Composer</title></head>
+        <body>
+          <h1>Compose</h1>
+          <p>${'Draft your newsletter below before sending it out. '.repeat(40)}</p>
+          <iframe src="/designmode-frame" width="600" height="400"></iframe>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    if (req.url === '/designmode-frame') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <body>
+          <p>Unsaved newsletter draft the user has not sent yet.</p>
+          <script>document.designMode = 'on';</script>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
     // A select that IS data entry: it sits in a form with a submit button.
     if (req.url === '/submit-form-select') {
       res.end(`
@@ -189,6 +306,55 @@ function createMockServer() {
             <select name="size"><option>S</option><option>M</option></select>
             <button type="submit">Continue</button>
           </form>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    // A DOM-only tool: a 2048-style game with no input, textarea, select,
+    // contenteditable, canvas, dialog, or application role anywhere on the
+    // page -- every telemetry count rule 1 checks is zero. Nothing here is an
+    // article either, so rule 4's word-count floor is the only thing standing
+    // between a discard and the game state living in these tile divs.
+    if (req.url === '/dom-tool') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>2048</title></head>
+        <body>
+          <div class="heading"><h1>2048</h1></div>
+          <div class="scores">
+            <div class="score-box">Score <span>128</span></div>
+            <div class="best-box">Best <span>2048</span></div>
+          </div>
+          <div class="grid">
+            <div class="grid-row">
+              <div class="tile tile-2">2</div>
+              <div class="tile tile-4">4</div>
+              <div class="tile tile-empty"></div>
+              <div class="tile tile-empty"></div>
+            </div>
+            <div class="grid-row">
+              <div class="tile tile-8">8</div>
+              <div class="tile tile-empty"></div>
+              <div class="tile tile-16">16</div>
+              <div class="tile tile-empty"></div>
+            </div>
+            <div class="grid-row">
+              <div class="tile tile-empty"></div>
+              <div class="tile tile-32">32</div>
+              <div class="tile tile-empty"></div>
+              <div class="tile tile-empty"></div>
+            </div>
+            <div class="grid-row">
+              <div class="tile tile-64">64</div>
+              <div class="tile tile-empty"></div>
+              <div class="tile tile-empty"></div>
+              <div class="tile tile-128">128</div>
+            </div>
+          </div>
+          <div class="game-footer"><p>Join the numbers to get the 2048 tile.</p></div>
         </body>
         </html>
       `);
@@ -229,10 +395,148 @@ function createMockServer() {
       return;
     }
 
+    // Step 2 of the extraction plan: the live-DOM harvest must skip hidden and
+    // off-screen prose that a detached clone's innerText === textContent used
+    // to let straight through, and must still skip nav text via the noise list.
+    if (req.url === '/hidden-prose') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Hidden Prose Test</title></head>
+        <body>
+          <article>
+            <p>${VISIBLE_PARAGRAPHS[0]}</p>
+            <p>${VISIBLE_PARAGRAPHS[1]}</p>
+            <p>${VISIBLE_PARAGRAPHS[2]}</p>
+            <div style="display:none">
+              <p>${HIDDEN_DIV_PARAGRAPHS[0]}</p>
+              <p>${HIDDEN_DIV_PARAGRAPHS[1]}</p>
+              <p>${HIDDEN_DIV_PARAGRAPHS[2]}</p>
+            </div>
+            <p style="position:absolute;left:-9999px">${OFFSCREEN_PARAGRAPH}</p>
+          </article>
+          <nav><p>${NAV_PARAGRAPH}</p></nav>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    // Step 3 of the extraction plan: the widened block selector must harvest
+    // <td> titles under the old 20-char floor and a <span class="commtext">
+    // nested inside a <td>, counting the comment once (via the <td>) not
+    // twice; and a <p> nested two plain <div>s deep must count exactly once.
+    if (req.url === '/table-prose') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Table Prose Test</title></head>
+        <body>
+          <table>
+            <tr><td>${TABLE_TITLES[0]}</td></tr>
+            <tr><td>${TABLE_TITLES[1]}</td></tr>
+            <tr><td><span class="commtext">${TABLE_COMMENTS[0]}</span></td></tr>
+            <tr><td><span class="commtext">${TABLE_COMMENTS[1]}</span></td></tr>
+          </table>
+          <div class="outer"><div class="inner"><p>${NESTED_PARAGRAPH}</p></div></div>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    // Inline markup joins its nearest block ancestor's group, so a nested span
+    // chain is counted once via the <p>; and the rendered test is per text
+    // node's own parent, so a visible <span> under a hidden <p> survives.
+    if (req.url === '/nested-spans') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Nested Spans Test</title></head>
+        <body>
+          <article>
+            <p><span><span>${NESTED_SPAN_WORDS}</span></span></p>
+            <p style="visibility:hidden"><span style="visibility:visible">${HIDDEN_P_VISIBLE_SPAN_WORDS}</span></p>
+            <figure><figcaption>${FIGCAPTION_WORDS}</figcaption></figure>
+            <details><summary>${SUMMARY_CAPTION}</summary><p>${CLOSED_DETAILS_WORDS}</p></details>
+          </article>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    // Round-2 rewrite: the text-node walk must count a block's own text even
+    // when it holds nested blocks (the HN comment shape), must not check
+    // opacity on prose, must pick the container from the pruned set, must keep
+    // <br> as a word break, and must inherit a <td>'s no-floor through a
+    // wrapper <div>.
+    if (req.url === '/text-nodes') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Text Nodes Test</title></head>
+        <body>
+          <aside class="sidebar"><article><p>${TEXTNODE_SIDEBAR}</p></article></aside>
+          <article style="display:none"><p>${TEXTNODE_HIDDEN_ARTICLE}</p></article>
+          <div class="entry-content">
+            <table>
+              <tr><td><div class="commtext">${TEXTNODE_A}<p>${TEXTNODE_B}<p>${TEXTNODE_C}</div></td></tr>
+              <tr><td><div class="d-flex">${TEXTNODE_CELL_WRAPPER}</div></td></tr>
+            </table>
+            <p class="reveal" style="opacity:0">${TEXTNODE_REVEAL}</p>
+            <p>Line one<br>Line two</p>
+            <p><span id="shadow-host">${TEXTNODE_UNSLOTTED}</span></p>
+            <div>${TEXTNODE_VISIBLE_PARENT} <div style="display:none">${TEXTNODE_HIDDEN_CHILD}</div></div>
+            <p>${TEXTNODE_AD_PARAGRAPH} <span class="ad">${TEXTNODE_AD_SPAN}</span></p>
+          </div>
+          <script>
+            document.getElementById('shadow-host')
+              .attachShadow({ mode: 'open' }).innerHTML = '<span>rendered instead</span>';
+          </script>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
+    // designMode on the TOP document (a copy-enabler extension's doing, not an
+    // editor) must never be treated as an unsaved rich-text draft.
+    if (req.url === '/designmode-top') {
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Rich Reading Page</title></head>
+        <body>
+          <script>document.designMode = 'on';</script>
+          <main><p>${DESIGNMODE_TOP_PARAGRAPH}</p></main>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
     res.end('<h1>404 Not Found</h1>');
   });
 
   return new Promise(resolve => server.listen(PORT, () => resolve(server)));
+}
+
+// Inject into every frame of the tab serving `route` and merge the per-frame
+// results exactly as the background service worker does. The worker can't
+// dynamic-import (banned on ServiceWorkerGlobalScope), so it hands back the raw
+// per-frame results and the pure merge runs here in Node.
+async function extractTab(background, route) {
+  const frames = await background.evaluate(async (target) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find(t => t.url.includes(target));
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: true },
+      files: ['src/content/in-tab-extractor.js']
+    });
+    return results.map(r => ({ frameId: r.frameId, result: r.result }));
+  }, route);
+  return mergeFrameExtractions(frames);
 }
 
 async function runHardeningTests() {
@@ -358,15 +662,7 @@ async function runHardeningTests() {
     await orphanPage.goto(`http://localhost:${PORT}/orphan-picker`);
     await orphanPage.waitForLoadState('domcontentloaded');
 
-    const orphanCheck = await background.evaluate(async () => {
-      const tabs = await chrome.tabs.query({});
-      const target = tabs.find(t => t.url.includes('/orphan-picker'));
-      const results = await chrome.scripting.executeScript({
-        target: { tabId: target.id, allFrames: true },
-        files: ['src/content/in-tab-extractor.js']
-      });
-      return results?.[0]?.result;
-    });
+    const orphanCheck = await extractTab(background, '/orphan-picker');
 
     assert.strictEqual(orphanCheck.closureTelemetry.inputCounts.selects, 0,
       'a version picker outside a form is chrome, not data entry');
@@ -388,31 +684,38 @@ async function runHardeningTests() {
         why: 'a virtualized editor is visible only through its vendor class, and its draft is unsaved work' },
       { route: '/submit-form-select', tier: 'suspend_only',
         expect: { selects: 1 },
-        why: 'a select inside a submittable form is real data entry' }
+        why: 'a select inside a submittable form is real data entry' },
+      { route: '/designmode-editor', tier: 'suspend_only', dirty: true,
+        expect: { appContainers: 1 },
+        why: 'document.designMode turns the whole iframe document into an editor, with no element for TEXT_EDITOR_SELECTOR to match' },
+      { route: '/dom-tool', tier: 'suspend_only', dirty: false,
+        expect: { appContainers: 0, textareas: 0, selects: 0, passwords: 0, otherInputs: 0 },
+        reason: 'Short or low-confidence content',
+        why: 'a DOM-only tool with zero controls is held by rule 4 alone; if a harvest change ever pushes its chrome past 120 words it would close with the user\'s game state' }
     ];
 
     for (const testCase of telemetryCases) {
       const casePage = await context.newPage();
       await casePage.goto(`http://localhost:${PORT}${testCase.route}`);
-      await casePage.waitForLoadState('domcontentloaded');
+      // 'load' waits for iframes; domcontentloaded does not, and the
+      // designmode-editor case sets its state in a subframe.
+      await casePage.waitForLoadState('load');
 
-      const caseResult = await background.evaluate(async (route) => {
-        const tabs = await chrome.tabs.query({});
-        const target = tabs.find(t => t.url.includes(route));
-        const results = await chrome.scripting.executeScript({
-          target: { tabId: target.id, allFrames: true },
-          files: ['src/content/in-tab-extractor.js']
-        });
-        return results?.[0]?.result;
-      }, testCase.route);
+      // Merged, same as the background service worker does, so a case whose
+      // editor surface lives in a subframe (e.g. designmode-editor) is judged
+      // on what the tab as a whole reports, not on whichever frame came first.
+      const caseResult = await extractTab(background, testCase.route);
 
       for (const [key, want] of Object.entries(testCase.expect)) {
         assert.strictEqual(caseResult.closureTelemetry.inputCounts[key], want,
           `${testCase.route}: ${key} should be ${want} — ${testCase.why}`);
       }
-      assert.strictEqual(
-        classifyClosureSafety({ ...caseResult.closureTelemetry, wordCount: caseResult.wordCount }).tier,
-        testCase.tier, `${testCase.route} must classify ${testCase.tier}`);
+      const classified = classifyClosureSafety({ ...caseResult.closureTelemetry, wordCount: caseResult.wordCount });
+      assert.strictEqual(classified.tier, testCase.tier, `${testCase.route} must classify ${testCase.tier}`);
+      if (testCase.reason !== undefined) {
+        assert.strictEqual(classified.reason, testCase.reason,
+          `${testCase.route}: reason should be "${testCase.reason}" — ${testCase.why}`);
+      }
       if (testCase.dirty !== undefined) {
         // The dirty check and the telemetry count share one editor list; before
         // they were reconciled, a draft in Ace or CodeMirror read as clean.
@@ -422,6 +725,165 @@ async function runHardeningTests() {
       console.log(`✓ ${testCase.route} -> ${testCase.tier} (${testCase.why})`);
       await casePage.close();
     }
+
+    // 4a-4b. EXTRACTION_PLAN.md Step 2: the live-DOM harvest must recover
+    // exactly the visible prose and none of the hidden/off-screen/nav prose
+    // that a detached clone's innerText === textContent used to leak through.
+    const hiddenProsePage = await context.newPage();
+    await hiddenProsePage.goto(`http://localhost:${PORT}/hidden-prose`);
+    await hiddenProsePage.waitForLoadState('domcontentloaded');
+
+    const hiddenProseResult = await extractTab(background, '/hidden-prose');
+
+    const expectedWordCount = VISIBLE_PARAGRAPHS
+      .join(' ')
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean).length;
+
+    assert.strictEqual(hiddenProseResult.wordCount, expectedWordCount,
+      `wordCount must equal exactly the visible paragraphs' word count (${expectedWordCount}), got ${hiddenProseResult.wordCount}`);
+
+    const hiddenWords = ['hiddendiv0-0', 'hiddendiv1-0', 'hiddendiv2-0', 'offscreen-0', 'navword-0'];
+    for (const word of hiddenWords) {
+      assert.ok(!hiddenProseResult.cleanText.includes(word),
+        `cleanText must not contain "${word}" — hidden/off-screen/nav prose must not survive the live-DOM harvest`);
+    }
+    console.log(`✓ /hidden-prose: wordCount === ${expectedWordCount} (visible only), no hidden/off-screen/nav words leaked into cleanText`);
+    await hiddenProsePage.close();
+
+    // 4a-4c. EXTRACTION_PLAN.md Step 3: widened block selector must harvest
+    // <td> titles under the old 20-char floor and count a <p> nested two plain
+    // <div>s deep exactly once, not once per wrapping <div>.
+    const tableProsePage = await context.newPage();
+    await tableProsePage.goto(`http://localhost:${PORT}/table-prose`);
+    await tableProsePage.waitForLoadState('domcontentloaded');
+
+    const tableProseResult = await extractTab(background, '/table-prose');
+
+    const expectedTableWordCount = [...TABLE_TITLES, ...TABLE_COMMENTS, NESTED_PARAGRAPH]
+      .join(' ')
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean).length;
+
+    assert.strictEqual(tableProseResult.wordCount, expectedTableWordCount,
+      `wordCount must equal the exact expected count (${expectedTableWordCount}) — short <td> titles must be harvested and the nested <p> counted exactly once, got ${tableProseResult.wordCount}`);
+
+    // The nested <p>'s first word must appear exactly once: not zero (dropped)
+    // and not twice (double-counted by both wrapping <div>s).
+    const nestedOccurrences = tableProseResult.cleanText.split('nested-0').length - 1;
+    assert.strictEqual(nestedOccurrences, 1,
+      `"nested-0" must appear exactly once in cleanText — nested <div>s must not double-count the <p> they wrap`);
+
+    console.log(`✓ /table-prose: wordCount === ${expectedTableWordCount} (short <td> titles harvested, <span> comment counted once via its <td>, nested <p> counted once)`);
+    await tableProsePage.close();
+
+    // 4a-4d. Nested inline markup must be counted once, via the nearest block
+    // ancestor, and the per-text-node rendered test must keep a visible <span>
+    // that sits inside a visibility:hidden <p>.
+    const nestedSpansPage = await context.newPage();
+    await nestedSpansPage.goto(`http://localhost:${PORT}/nested-spans`);
+    await nestedSpansPage.waitForLoadState('domcontentloaded');
+
+    const nestedSpansResult = await extractTab(background, '/nested-spans');
+
+    // WORDS4 (inside a closed <details>) is asserted separately below, not
+    // folded into this expectation, so a surprise there is visible on its own.
+    const expectedNestedSpansWordCount = [NESTED_SPAN_WORDS, HIDDEN_P_VISIBLE_SPAN_WORDS, FIGCAPTION_WORDS, SUMMARY_CAPTION]
+      .join(' ')
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean).length;
+
+    // Verify the assumption the expectation above relies on: a closed <details>
+    // does not render its non-summary children, so checkVisibility must say no.
+    const closedDetailsWordLeaked = nestedSpansResult.cleanText.includes('detailshidden-0');
+    assert.strictEqual(closedDetailsWordLeaked, false,
+      'a <p> inside a CLOSED <details> must not be rendered, so its text must not reach cleanText');
+
+    assert.strictEqual(nestedSpansResult.wordCount, expectedNestedSpansWordCount,
+      `wordCount must equal exactly WORDS + WORDS2 + WORDS3 + "short cap" (${expectedNestedSpansWordCount}), got ${nestedSpansResult.wordCount}`);
+
+    const nestedFirstWordOccurrences = nestedSpansResult.cleanText.split('nspan-0').length - 1;
+    assert.strictEqual(nestedFirstWordOccurrences, 1,
+      '"nspan-0" must appear exactly once — the <p> is harvested, and the outer/inner <span>s must not also contribute');
+
+    console.log(`✓ /nested-spans: wordCount === ${expectedNestedSpansWordCount} (nested spans counted once via the <p>, visible span under a hidden <p> still harvested, figcaption harvested, closed-details text excluded)`);
+    await nestedSpansPage.close();
+
+    // 4a-4f. Round-2 rewrite: the harvest walks text nodes grouped by nearest
+    // block ancestor, so a block that holds nested blocks keeps its OWN text
+    // (the Hacker News comment shape), prose is not opacity-gated, the
+    // container is picked from the pruned set, <br> breaks words, and a <td>'s
+    // no-floor is inherited by a wrapper <div> inside it.
+    const textNodesPage = await context.newPage();
+    await textNodesPage.goto(`http://localhost:${PORT}/text-nodes`);
+    await textNodesPage.waitForLoadState('domcontentloaded');
+
+    const textNodesResult = await extractTab(background, '/text-nodes');
+
+    const expectedTextNodesWordCount = [
+      TEXTNODE_A, TEXTNODE_B, TEXTNODE_C, TEXTNODE_REVEAL,
+      TEXTNODE_BR_LINES, TEXTNODE_CELL_WRAPPER,
+      TEXTNODE_VISIBLE_PARENT, TEXTNODE_AD_PARAGRAPH
+    ].join(' ').trim().split(/\s+/).filter(Boolean).length;
+
+    assert.strictEqual(textNodesResult.wordCount, expectedTextNodesWordCount,
+      `wordCount must equal exactly A + B + C + reveal + "${TEXTNODE_BR_LINES}" + "${TEXTNODE_CELL_WRAPPER}" + visible-parent + ad-paragraph (${expectedTextNodesWordCount}), got ${textNodesResult.wordCount}`);
+
+    // Each nested-block sibling contributes exactly once: not zero (the div's
+    // own text dropped because it holds <p>s) and not twice (double-counted).
+    for (const firstWord of ['tna-0', 'tnb-0', 'tnc-0']) {
+      const occurrences = textNodesResult.cleanText.split(firstWord).length - 1;
+      assert.strictEqual(occurrences, 1,
+        `"${firstWord}" must appear exactly once in cleanText — a block that holds nested blocks keeps its own text, and no text node is counted twice`);
+    }
+
+    assert.ok(textNodesResult.cleanText.includes('tnreveal-0'),
+      'an opacity:0 scroll-reveal paragraph must still be harvested — a background tab never scrolls, so the reveal never fires');
+    assert.ok(!textNodesResult.cleanText.includes('tnunslotted-0'),
+      'light-DOM text a shadow root does not slot is laid out nowhere, so it must not be counted (GitHub\'s <relative-time> fallback date)');
+    assert.ok(!textNodesResult.cleanText.includes('tnsidebar-0'),
+      'an <article> inside <aside class="sidebar"> must not win the container pick over the real .entry-content');
+    assert.ok(textNodesResult.cleanText.includes(TEXTNODE_CELL_WRAPPER),
+      'a wrapper <div> inside a <td> must inherit the cell\'s no-floor');
+
+    assert.ok(!textNodesResult.cleanText.includes('tnhiddenart-0'),
+      'a hidden <article style="display:none"> preceding the real .entry-content must not win the container pick, and must not be counted itself');
+    assert.ok(textNodesResult.cleanText.includes('tnvisparent-0'),
+      'a visible <div>\'s own text must be harvested even though it also holds a hidden nested <div>');
+    assert.ok(!textNodesResult.cleanText.includes('tnhiddenchild-0'),
+      'a hidden nested <div style="display:none"> inside a visible parent must not be counted');
+    assert.ok(textNodesResult.cleanText.includes('tnadpara-0'),
+      'a visible <p>\'s own text must be harvested even though it holds an inline <span class="ad">');
+    assert.ok(!textNodesResult.cleanText.includes('tnadspan-0'),
+      'an inline <span class="ad"> must be excluded -- the TreeWalker REJECTs NOISE_SELECTOR subtrees');
+
+    console.log(`✓ /text-nodes: wordCount === ${expectedTextNodesWordCount} (nested-block siblings each counted once, opacity:0 prose kept, sidebar <article> skipped, hidden container decoy skipped, hidden child div excluded, inline .ad excluded, <br> breaks words, <td> no-floor inherited by a wrapper <div>)`);
+    await textNodesPage.close();
+
+    // 4a-4e. designMode on the TOP document (set by copy-enabler extensions on
+    // every page) must never be treated as an unsaved editor draft -- only a
+    // SUBFRAME's designMode is, per the adversarial-review fix to checkIsDirty.
+    const designmodeTopPage = await context.newPage();
+    await designmodeTopPage.goto(`http://localhost:${PORT}/designmode-top`);
+    await designmodeTopPage.waitForLoadState('domcontentloaded');
+
+    const designmodeTopCheck = await background.evaluate(async () => {
+      const tabs = await chrome.tabs.query({});
+      const target = tabs.find(t => t.url.includes('/designmode-top'));
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: target.id },
+        files: ['src/content/in-tab-extractor.js']
+      });
+      return results?.[0]?.result;
+    });
+
+    assert.strictEqual(designmodeTopCheck.isDirty, false,
+      'designMode on the top document must not mark the tab dirty -- copy-enabler extensions set it on every page');
+    console.log('✓ /designmode-top: top-document designMode does not trigger isDirty');
+    await designmodeTopPage.close();
 
     // 4a-5. The box test compares against the document origin, not the viewport.
     // Read raw, getBoundingClientRect made every control above the fold look

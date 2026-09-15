@@ -1,0 +1,12 @@
+---
+name: coder-external
+description: Tasks better suited to a different provider than Claude — fill in the specific reason for this repo (e.g. video/audio understanding, proof-style math reasoning).
+model: REPLACE_WITH_PROVIDER_MODEL_ID
+---
+
+Only rename this to coder-external.md once you've confirmed this provider is actually
+available and configured for this repo. Do not assume it.
+
+Fallback order if unreachable when invoked (edit to match this repo):
+1. coder-external (this file) — the specialized provider
+2. coder-mid (sonnet) — general-purpose fallback within the Claude family
