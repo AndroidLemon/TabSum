@@ -29,7 +29,8 @@ const SUMMARY_SCHEMA = {
 
 const SYSTEM_PROMPT =
   'You are an executive knowledge assistant. Given an article, respond with JSON: ' +
-  '{ "tldr": "1-2 sentence overview", "bullets": ["takeaway 1", "takeaway 2", "takeaway 3"], "tags": ["tag1", "tag2"] }';
+  '{ "tldr": "1-2 sentence overview", "bullets": ["takeaway 1", "takeaway 2", "takeaway 3"], "tags": ["tag1", "tag2"] }. ' +
+  'bullets should be an array of up to 5 distinct key takeaways, and tags should be an array of up to 4 topic tags.';
 
 /**
  * Main summarization dispatcher
