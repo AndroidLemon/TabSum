@@ -242,6 +242,7 @@ function createMockServer() {
           <textarea style="display:none"></textarea>
           <textarea style="position:absolute;left:-9999px;top:-9999px"></textarea>
           <select style="visibility:hidden"><option>a</option></select>
+          <script>document.querySelector('textarea').value = 'a draft the user typed, then the page hid the box (GitHub Preview mode)';</script>
         </body>
         </html>
       `);
@@ -694,9 +695,9 @@ async function runHardeningTests() {
 
     // 4a-4. Table-driven coverage for the telemetry rules added in Steps 3-6.
     const telemetryCases = [
-      { route: '/hidden-controls', tier: 'safe_to_close',
+      { route: '/hidden-controls', tier: 'safe_to_close', dirty: true,
         expect: { textareas: 0, selects: 0 },
-        why: 'controls the user cannot see are not controls the user is using' },
+        why: 'controls the user cannot see are not counted as controls in use, but a hidden textarea holding a draft is still unsaved work: the closed-details rule must not widen into "unrendered = clean"' },
       { route: '/vendor-editor', tier: 'suspend_only', dirty: true,
         expect: { appContainers: 1 },
         why: 'a virtualized editor is visible only through its vendor class, and its draft is unsaved work' },

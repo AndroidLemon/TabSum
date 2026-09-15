@@ -198,7 +198,9 @@
     // Preview mode with the draft still inside it, so those must stay dirty.
     // ponytail: a user who opened the details, typed, and closed it again loses that draft.
     // Upgrade path: snapshot control values at document_idle and diff against those.
-    const isFoldedAway = (el) => Boolean(el.closest('details:not([open])'));
+    // A control in the <summary> itself is rendered even when the details is closed, so it
+    // is exempt.
+    const isFoldedAway = (el) => Boolean(el.closest('details:not([open])')) && !el.closest('summary');
 
     const valueTypes = new Set(['text', 'email', 'url', 'tel', 'password', 'number', '',
       'date', 'datetime-local', 'month', 'time', 'week']);
