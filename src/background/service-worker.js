@@ -482,7 +482,7 @@ async function processTabArchival(tab, settings, lastActiveTime) {
       wordCount: extracted.wordCount || 0,
       closureTier: safety.tier,
       closureReason,
-      meta: { ...extracted.meta, heuristicTags: summary.heuristicTags }
+      meta: extracted.meta
     }, shouldClose ? 'closed' : 'suspended');
 
     if (shouldClose) {
@@ -582,7 +582,7 @@ async function archiveActiveTab(activeTab) {
     wordCount: extracted.wordCount || 0,
     closureTier: classifyClosureSafety({ ...extracted.closureTelemetry, wordCount: extracted.wordCount }).tier,
     closureReason: 'Saved manually; tab left open',
-    meta: { ...extracted.meta, heuristicTags: summary.heuristicTags }
+    meta: extracted.meta
   }, 'left-open'); // saved; the tab stays open
 
   await updateBadge();

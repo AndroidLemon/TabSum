@@ -19,13 +19,6 @@ Last updated 2026-09-15, after PR #4 (extraction-v1) merged.
    over a length floor. From the round-2 review (finding C6). Small.
    *Trigger:* a summary that describes the site's menu instead of the page.
 
-2. **Delete the heuristic-tag trial scaffolding.**
-   `generateTags`/`heuristicTags` in `summarizer.js` run on every capture and
-   store into `record.meta` for a side-by-side comparison that has not been
-   done. Either do the comparison or delete the code. Marked `ponytail:` at
-   `summarizer.js:47`. Small.
-   *Trigger:* any summariser change, or first look at real tag quality.
-
 3. **Is Hacker News worth summarising at all?**
    The front page now extracts at 99.9% recall and closes, but a summary of
    thirty story titles may be useless. Answer is a corpus label change

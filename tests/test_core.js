@@ -3,7 +3,7 @@
  */
 
 import assert from 'node:assert';
-import { summarizeWithHeuristics, summarizeContent, normalizeSummary, generateTags } from '../src/ai/summarizer.js';
+import { summarizeWithHeuristics, summarizeContent, normalizeSummary } from '../src/ai/summarizer.js';
 import { extractDomain, DEFAULT_SETTINGS } from '../src/storage/db.js';
 
 console.log('--- Running TabSum Core Verification Tests ---');
@@ -38,11 +38,9 @@ const summary = summarizeWithHeuristics(sampleArticle);
 assert.ok(summary.tldr, 'TL;DR should exist');
 assert.ok(summary.bullets.length > 0, 'Bullets should exist');
 assert.deepStrictEqual(summary.tags, [], 'Heuristic summaries carry no tags; only AI tiers tag');
-const sampleTags = generateTags(sampleArticle.title, sampleArticle.cleanText, sampleArticle.domain);
-assert.ok(sampleTags.includes('Engineering') || sampleTags.includes('Dev'), 'Trial tagger should detect engineering');
-const withHeuristicTags = await summarizeContent(sampleArticle, { aiProvider: 'heuristic' });
-assert.deepStrictEqual(withHeuristicTags.tags, []);
-assert.deepStrictEqual(withHeuristicTags.heuristicTags, sampleTags, 'heuristicTags kept for comparison');
+const heuristicOnly = await summarizeContent(sampleArticle, { aiProvider: 'heuristic' });
+assert.deepStrictEqual(heuristicOnly.tags, [], 'Without an AI tier summarizeContent emits no tags');
+assert.strictEqual('heuristicTags' in heuristicOnly, false, 'Trial tagger output no longer rides on the summary');
 
 console.log('Summary Output:\n', JSON.stringify(summary, null, 2));
 console.log('✓ Heuristic summarizer passed');
@@ -109,25 +107,6 @@ assert.deepStrictEqual(lowConfidenceSummary.bullets, [], 'Low-confidence pages s
 assert.ok(lowConfidenceSummary.tldr, 'Low-confidence pages should still have a tldr');
 assert.strictEqual(lowConfidenceSummary.source, 'heuristic', 'Summaries report which tier wrote them');
 console.log('✓ Low-confidence bullets passed');
-
-// Test 7: Tag heuristics should not over-tag unrelated content
-console.log('Testing tag heuristics do not over-tag...');
-const cookingArticle = {
-  title: 'Simple Weeknight Pasta Recipes',
-  domain: 'homecooking.example',
-  meta: {},
-  cleanText: `
-    Tonight's dinner is a simple pasta dish that comes together in under thirty minutes.
-    Start by boiling salted water and cooking the pasta until just al dente.
-    While the pasta cooks, saute garlic in olive oil until fragrant, then add crushed tomatoes.
-    Simmer the sauce, season with basil and a pinch of sugar, then toss with the drained pasta.
-    Finish with grated parmesan and fresh cracked pepper before serving warm.
-  `
-};
-const cookingTags = generateTags(cookingArticle.title, cookingArticle.cleanText, cookingArticle.domain);
-assert.ok(!cookingTags.includes('Engineering'), 'Cooking article must not be tagged Engineering');
-assert.ok(!cookingTags.includes('Business'), 'Cooking article must not be tagged Business');
-console.log('✓ Tag heuristics over-tagging check passed');
 
 // Test 8: In-tab extractor title separator regex (honest regex-only test;
 // the extractor stays a self-contained IIFE injected by chrome.scripting)

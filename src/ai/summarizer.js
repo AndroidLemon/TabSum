@@ -42,13 +42,10 @@ function withTimeout(promise, ms) {
  * @param {Object} settings { aiProvider, geminiApiKey }
  * @returns {Promise<{ tldr: string, bullets: string[], tags: string[], source: 'gemini-api'|'openai-compatible'|'prompt-api'|'heuristic' }>}
  *   `source` says which tier wrote it; auto-close only trusts AI-written summaries.
- *   Only AI tiers produce tags. `heuristicTags` carries the keyword tagger's output for
- *   side-by-side comparison; it is stored in record.meta and never shown.
- *   ponytail: trial scaffolding - delete generateTags/heuristicTags once the comparison is done.
+ *   Only AI tiers produce tags; the heuristic tier returns `tags: []`.
  */
 export async function summarizeContent(extractedData, settings = {}) {
   const { cleanText, meta, title, domain, isLowConfidence } = extractedData;
-  const heuristicTags = generateTags(title, cleanText, domain);
 
   // Handle low-confidence pages (short landing pages, quick links)
   if (isLowConfidence || !cleanText || cleanText.length < 100) {
@@ -59,8 +56,7 @@ export async function summarizeContent(extractedData, settings = {}) {
         bullets: [],
         tags: []
       }),
-      source: 'heuristic',
-      heuristicTags
+      source: 'heuristic'
     };
   }
 
@@ -85,14 +81,14 @@ export async function summarizeContent(extractedData, settings = {}) {
     try {
       const raw = await withTimeout(run(), timeoutMs);
       const normalized = raw && normalizeSummary(raw);
-      if (normalized?.tldr) return { ...normalized, source, heuristicTags };
+      if (normalized?.tldr) return { ...normalized, source };
     } catch (err) {
       console.warn('AI tier failed, falling back:', err?.message || err);
     }
   }
 
   // Fallback: Tier 0 Algorithmic Heuristic Distillation
-  return { ...normalizeSummary(summarizeWithHeuristics(extractedData)), source: 'heuristic', heuristicTags };
+  return { ...normalizeSummary(summarizeWithHeuristics(extractedData)), source: 'heuristic' };
 }
 
 /**
@@ -200,55 +196,6 @@ export function summarizeWithHeuristics({ title, cleanText, meta, domain }) {
     bullets: bullets.map(b => cleanUpSummaryText(b)),
     tags: [] // tags come only from AI tiers
   };
-}
-
-/**
- * Generate semantic category tags using topic keyword clustering.
- * Each tag needs `minHits` distinct keyword matches to fire, so a single
- * generic word can't tag every page.
- */
-export function generateTags(title = '', text = '', domain = '') {
-  const tags = new Set();
-  const corpus = `${title} ${domain} ${text.slice(0, 1500)}`.toLowerCase();
-
-  const domainMap = {
-    'github.com': 'Engineering',
-    'stackoverflow.com': 'Dev',
-    'medium.com': 'Articles',
-    'nytimes.com': 'News',
-    'theverge.com': 'Tech',
-    'techcrunch.com': 'Startups',
-    'arxiv.org': 'Research',
-    'wikipedia.org': 'Reference',
-    'youtube.com': 'Media'
-  };
-
-  if (domainMap[domain]) {
-    tags.add(domainMap[domain]);
-  }
-
-  const topicKeywords = [
-    { tag: 'AI', minHits: 1, terms: [/\bllm\b/, /\bgpt\b/, /machine learning/, /neural network/, /transformer/, /deep learning/, /generative ai/] },
-    { tag: 'Engineering', minHits: 2, terms: [/architecture/, /database/, /backend/, /frontend/, /\brust\b/, /\bpython\b/, /typescript/, /golang/, /\breact\b/, /docker/, /kubernetes/, /webassembly/, /compiler/] },
-    { tag: 'Design', minHits: 1, terms: [/\bux\b/, /typography/, /design system/, /\bfigma\b/, /wireframe/] },
-    { tag: 'Productivity', minHits: 2, terms: [/time management/, /pomodoro/, /inbox zero/, /calendar blocking/, /task list/] },
-    { tag: 'Business', minHits: 2, terms: [/\bstartup\b/, /venture capital/, /\bsaas\b/, /funding round/, /quarterly earnings/, /\bipo\b/] },
-    { tag: 'Science', minHits: 1, terms: [/biology/, /physics/, /climate change/, /genetics/, /astronomy/, /neuroscience/] },
-    { tag: 'Security', minHits: 1, terms: [/vulnerability/, /encryption/, /malware/, /\bcve\b/, /zero-day/, /ransomware/] }
-  ];
-
-  for (const { tag, minHits, terms } of topicKeywords) {
-    const hits = terms.filter(re => re.test(corpus)).length;
-    if (hits >= minHits) {
-      tags.add(tag);
-    }
-  }
-
-  if (tags.size === 0) {
-    tags.add('Reading');
-  }
-
-  return Array.from(tags).slice(0, 4);
 }
 
 /**
