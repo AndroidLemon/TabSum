@@ -252,7 +252,7 @@ function cardHtml(tab) {
         <span class="card-time">${formatTimeAgo(tab.capturedAt)}</span>
       </div>
       <h3 class="card-title" title="${escapeHtml(tab.title)}">${highlightSearch(tab.title, q)}</h3>
-      ${tab.summary?.tldr ? `<div class="card-tldr">${highlightSearch(tab.summary.tldr, q)}</div>` : ''}
+      ${tab.summary?.tldr ? `<div class="card-tldr">${highlightSearch(tab.summary.tldr, q)}</div>` : '<div class="card-tldr card-tldr-empty">No AI summary for this tab</div>'}
       ${bullets.length ? `
         <button class="takeaways-toggle" type="button" aria-expanded="false"><span class="takeaways-chevron">▶</span> Key Takeaways (${bullets.length})</button>
         <ul class="card-bullets collapsed">${bullets.map(b => `<li>${highlightSearch(b, q)}</li>`).join('')}</ul>` : ''}

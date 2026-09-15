@@ -838,6 +838,12 @@ button {
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
 
+.card-tldr-empty {
+  color: var(--text-muted);
+  font-style: italic;
+  border-left-color: var(--border-color);
+}
+
 .takeaways-toggle {
   align-self: flex-start;
   display: inline-flex;
@@ -1449,7 +1455,7 @@ dialog.reader-dialog[open] {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
     gap: 16px;
-    align-items: start;
+    align-items: stretch; /* cards in a row share a height, summary or not */
   }
 
   .feed.compact {
