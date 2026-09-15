@@ -260,6 +260,8 @@ button {
   transform: rotate(180deg);
 }
 
+/* CSS anchor positioning (anchor-name/position-anchor/anchor()) needs Chrome 125+;
+   manifest.json's minimum_chrome_version enforces that floor. */
 #export-dropdown-btn {
   anchor-name: --export-dropdown-anchor;
 }

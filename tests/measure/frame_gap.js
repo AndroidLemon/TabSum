@@ -8,15 +8,17 @@
  * the caller pastes stdout into logs/measure-frames-discard-2026-09-14.md.
  *
  * Permission model: this script builds its OWN throwaway extension copy
- * (like tests/helpers/test-extension.js, but not using that helper, so the
- * shared test manifest is left alone) and grants host_permissions for only
- * the TOP-LEVEL origin of each corpus URL - one pattern per URL, computed
- * with the same originPatternFor() the extension itself uses. This is
- * "per-origin" mode: it simulates a user who has granted TabSum access to
- * the site they're reading, which is the realistic steady state (nobody
- * grants <all_urls> by default; optional_host_permissions in manifest.json
- * has to be requested). It deliberately does NOT grant permission for any
- * cross-origin child frame's own origin, because that's the gap under test.
+ * (like tests/helpers/test-extension.js, using that helper's
+ * extensionLaunchOptions/readCorpus/waitForServiceWorker, but with its own
+ * manifest so the shared test manifest is left alone) and grants
+ * host_permissions for only the TOP-LEVEL origin of each corpus URL - one
+ * pattern per URL, computed with the same originPatternFor() the extension
+ * itself uses. This is "per-origin" mode: it simulates a user who has
+ * granted TabSum access to the site they're reading, which is the
+ * realistic steady state (nobody grants <all_urls> by default;
+ * optional_host_permissions in manifest.json has to be requested). It
+ * deliberately does NOT grant permission for any cross-origin child
+ * frame's own origin, because that's the gap under test.
  */
 import fs from 'node:fs';
 import os from 'node:os';
