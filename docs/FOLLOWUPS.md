@@ -72,17 +72,6 @@ Last updated 2026-09-15, after PR #4 (extraction-v1) merged.
 
 ## Closure policy
 
-9. **pkg.go.dev is held forever by hidden clipboard-shim textareas.**
-   `checkIsDirty` is deliberately not visibility-gated (a hidden textarea with
-   a real draft is real), but pkg.go.dev ships pre-filled hidden textareas on
-   every load, so a pure documentation page reports unsaved work on every
-   sweep and can never be archived. Candidate: treat a textarea whose value
-   equals its `defaultValue` AND is hidden as not dirty, or skip
-   `[readonly]`/`aria-hidden` shims. From CLOSURE_POLICY_PLAN.md:544. Small,
-   but the change touches the zero-loss guard, so it needs a fixture and a
-   corpus run.
-   *Trigger:* the first user complaint that a docs site never closes.
-
 10. **Cross-origin frame gap rule.**
     A substantial cross-origin iframe that `executeScript` cannot reach could
     hide an editor. Measured on the corpus: one page (bbc.com/news, ad frames,

@@ -190,12 +190,22 @@
     // Not checked, because page scripts change them without the user and would block every close:
     // checkboxes/radios (Wikipedia's menus and appearance prefs are JS-set checkboxes) and
     // color/range (implicit non-empty defaults look like edits).
+    // pkg.go.dev folds a "Run this example" textarea under a closed <details> for every
+    // example (17 on net/http), value filled by script on load, so a pure docs page reported
+    // unsaved work on every sweep and could never be archived. Content the page folded away
+    // is not a draft. Deliberately narrower than "unrendered = clean": virtualized editors
+    // park the draft in an off-screen textarea, and GitHub's comment box goes display:none in
+    // Preview mode with the draft still inside it, so those must stay dirty.
+    // ponytail: a user who opened the details, typed, and closed it again loses that draft.
+    // Upgrade path: snapshot control values at document_idle and diff against those.
+    const isFoldedAway = (el) => Boolean(el.closest('details:not([open])'));
+
     const valueTypes = new Set(['text', 'email', 'url', 'tel', 'password', 'number', '',
       'date', 'datetime-local', 'month', 'time', 'week']);
     const inputs = queryAllDeep('input');
     for (const input of inputs) {
       const type = (input.getAttribute('type') || 'text').toLowerCase();
-      if (input.readOnly || input.disabled || isSearchInput(input)) {
+      if (input.readOnly || input.disabled || isSearchInput(input) || isFoldedAway(input)) {
         continue;
       }
       // Direct comparison, so clearing a prefilled field counts as an edit too
@@ -210,7 +220,7 @@
     // Check textareas (including in Shadow DOM)
     const textareas = queryAllDeep('textarea');
     for (const ta of textareas) {
-      if (ta.readOnly || ta.disabled) continue;
+      if (ta.readOnly || ta.disabled || isFoldedAway(ta)) continue;
       if (ta.value !== ta.defaultValue) {
         return { isDirty: true, reason: 'Unsaved textarea content detected' };
       }
