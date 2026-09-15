@@ -196,14 +196,15 @@ export function summarizeWithHeuristics({ title, cleanText, meta, domain }) {
  * Prompt window by block, not by character. The harvest walks the DOM in order, so any
  * pre-article chrome the noise list misses sits ahead of the article; start one block
  * before the first real paragraph (>= 200 chars) so its heading survives, and take whole
- * blocks from there. With no real paragraph (HN front page) start at 0.
+ * blocks from there. Whole blocks are appended until the budget is reached and the tail
+ * is hard-sliced, so one oversized paragraph is cut, never dropped.
  */
 export function excerpt(cleanText, maxChars) {
   const blocks = cleanText.split('\n\n');
   const first = blocks.findIndex(b => b.length >= 200);
   let text = '';
   for (const b of blocks.slice(Math.max(0, first - 1))) {
-    if (text && text.length + 2 + b.length > maxChars) break;
+    if (text.length >= maxChars) break;
     text += (text ? '\n\n' : '') + b;
   }
   return text.slice(0, maxChars);

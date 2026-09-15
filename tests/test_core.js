@@ -120,6 +120,7 @@ const allShort = Array.from({ length: 30 }, (_, i) => `Story title number ${i} o
 assert.ok(excerpt(allShort, 6000).startsWith('Story title number 0'), 'With no real paragraph (HN front page) the excerpt starts at block 0');
 assert.ok(excerpt(chromeThenArticle, 400).length <= 400, 'Excerpt never exceeds maxChars');
 assert.strictEqual(excerpt('x'.repeat(7000), 6000).length, 6000, 'A single oversized block is hard-sliced to maxChars');
+assert.strictEqual(excerpt('Heading\n\n' + 'y'.repeat(6500), 6000).length, 6000, 'A heading followed by one oversized block keeps the body, hard-sliced, instead of dropping it');
 console.log('✓ Block-aware excerpt passed');
 
 console.log('Testing withTimeout...');
