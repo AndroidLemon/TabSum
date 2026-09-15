@@ -764,10 +764,11 @@ function setupEventListeners() {
       toggleExportMenu(true);
     }
   });
+  exportMenu.addEventListener('beforetoggle', (e) => {
+    exportBtn.setAttribute('aria-expanded', String(e.newState === 'open'));
+  });
   exportMenu.addEventListener('toggle', (e) => {
-    const isOpen = e.newState === 'open';
-    exportBtn.setAttribute('aria-expanded', String(isOpen));
-    if (isOpen) exportMenu.querySelector('.export-option-btn')?.focus();
+    if (e.newState === 'open') exportMenu.querySelector('.export-option-btn')?.focus();
   });
   exportMenu.addEventListener('keydown', (e) => {
     const options = Array.from(exportMenu.querySelectorAll('.export-option-btn'));

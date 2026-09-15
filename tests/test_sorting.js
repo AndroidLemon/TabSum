@@ -121,6 +121,22 @@ export async function runSortingTests() {
   assert.strictEqual(limitedQuickReads[1].readingTimeMinutes, 8);
   console.log('✓ Sort with limit verified');
 
+  // Test 8: Unknown/empty/undefined sortBy falls back to default (newest first)
+  console.log('Testing unknown sortBy falls back to default order...');
+  const bogusSortTabs = await getArchivedTabs({ sortBy: 'bogus' });
+  assert.strictEqual(bogusSortTabs[0].id, 'tab-3', 'Unknown sortBy must fall back to newest-first');
+  assert.strictEqual(bogusSortTabs[1].id, 'tab-2');
+  assert.strictEqual(bogusSortTabs[2].id, 'tab-1');
+  const emptySortTabs = await getArchivedTabs({ sortBy: '' });
+  assert.strictEqual(emptySortTabs[0].id, 'tab-3', 'Empty sortBy must fall back to newest-first');
+  assert.strictEqual(emptySortTabs[1].id, 'tab-2');
+  assert.strictEqual(emptySortTabs[2].id, 'tab-1');
+  const undefinedSortTabs = await getArchivedTabs({ sortBy: undefined });
+  assert.strictEqual(undefinedSortTabs[0].id, 'tab-3', 'Undefined sortBy must fall back to newest-first');
+  assert.strictEqual(undefinedSortTabs[1].id, 'tab-2');
+  assert.strictEqual(undefinedSortTabs[2].id, 'tab-1');
+  console.log('✓ Unknown/empty/undefined sortBy fallback verified');
+
   console.log('--- All Sorting Unit Tests Passed Successfully! ---');
 }
 

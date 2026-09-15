@@ -231,7 +231,7 @@ export async function getArchivedTabs(filters = {}) {
     const store = tx.objectStore(STORE_NAME);
 
     // Use native index cursor direction for temporal sorting
-    const isCustomSort = Boolean(SORTS[sortBy]);
+    const isCustomSort = Object.hasOwn(SORTS, sortBy);
     const direction = sortBy === 'oldest' ? 'next' : 'prev';
     const request = store.index('capturedAt').openCursor(null, direction);
 

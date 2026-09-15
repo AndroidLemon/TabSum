@@ -176,7 +176,7 @@ export function buildZip(files) {
     const crc = crc32(dataBytes);
 
     const localHeader = new Uint8Array(30 + nameBytes.length);
-    const local = new DataView(localHeader.buffer);
+    const local = new DataView(localHeader.buffer, localHeader.byteOffset, localHeader.byteLength);
     local.setUint32(0, 0x04034b50, true);
     local.setUint16(4, 20, true);
     local.setUint16(6, 0x0800, true); // bit 11: names are UTF-8
@@ -192,7 +192,7 @@ export function buildZip(files) {
     localParts.push(localHeader, dataBytes);
 
     const centralHeader = new Uint8Array(46 + nameBytes.length);
-    const central = new DataView(centralHeader.buffer);
+    const central = new DataView(centralHeader.buffer, centralHeader.byteOffset, centralHeader.byteLength);
     central.setUint32(0, 0x02014b50, true);
     central.setUint16(4, 20, true);
     central.setUint16(6, 20, true);
@@ -215,7 +215,7 @@ export function buildZip(files) {
   const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
 
   const eocd = new Uint8Array(22);
-  const end = new DataView(eocd.buffer);
+  const end = new DataView(eocd.buffer, eocd.byteOffset, eocd.byteLength);
   end.setUint32(0, 0x06054b50, true);
   end.setUint16(8, files.length, true);
   end.setUint16(10, files.length, true);
