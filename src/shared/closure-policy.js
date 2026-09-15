@@ -24,10 +24,6 @@ export function isScriptableUrl(url) {
   return true;
 }
 
-export function timeoutMsFor(settings = {}) {
-  return (settings.timeoutMinutes || 60) * 60 * 1000;
-}
-
 /** The origin pattern chrome.permissions wants for a tab, or null if the URL won't parse. */
 export function originPatternFor(url) {
   try {
@@ -70,7 +66,7 @@ export function decideSweepAction(tab, ctx = {}) {
   if (tab.audible) return skip('playing audio');
   if (isExcludedDomain(domain, settings.excludedDomains)) return skip('excluded domain');
 
-  const timeoutMs = timeoutMsFor(settings);
+  const timeoutMs = (settings.timeoutMinutes || 60) * 60 * 1000;
   const idleDuration = now - (lastActive ?? now);
   if (idleDuration < timeoutMs) return skip('not stale yet');
 
@@ -189,12 +185,10 @@ export function decideClosure({ closureTier, summarySource, settings = {} } = {}
 export const MIN_COUNTABLE_FRAME_AREA = 100 * 100;
 
 export function mergeFrameExtractions(frameResults = []) {
-  const frames = (frameResults || [])
-    // Do NOT default a missing frameId to 0. Coercing it would let an entry that
-    // never identified itself win the top-frame lookup below, which is the very
-    // substitution this merge refuses to make.
-    .map((entry) => ({ frameId: entry?.frameId, result: entry?.result }))
-    .filter((frame) => frame.result && frame.result.success);
+  // frameId is read as-is. Do NOT default a missing one to 0: that would let an entry
+  // that never identified itself win the top-frame lookup below, which is the very
+  // substitution this merge refuses to make.
+  const frames = (frameResults || []).filter((frame) => frame?.result?.success);
   if (!frames.length) return null;
 
   // The top frame IS the tab. If its injection threw, we have no url, title,

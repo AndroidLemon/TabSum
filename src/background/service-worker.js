@@ -49,12 +49,10 @@ chrome.runtime.onInstalled.addListener(async () => {
   console.log('[TabSum] Installed.');
 
   // Open side panel when clicking action icon
-  if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
-    try {
-      await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
-    } catch (err) {
-      console.warn('[TabSum] Could not set panel behavior:', err);
-    }
+  try {
+    await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+  } catch (err) {
+    console.warn('[TabSum] Could not set panel behavior:', err);
   }
 
   await initialize();
@@ -283,11 +281,9 @@ let isSweeping = false;
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== ALARM_NAME) return;
 
-  // Safety Gate 1: Check if user is away from computer.
+  // Safety gate: Check if user is away from computer.
   // Don't auto-archive tabs while the user is AFK to prevent surprise on return.
-  const idleState = await new Promise(resolve => {
-    chrome.idle.queryState(IDLE_DETECTION_SECONDS, resolve);
-  });
+  const idleState = await chrome.idle.queryState(IDLE_DETECTION_SECONDS);
   if (idleState === 'idle' || idleState === 'locked') {
     return;
   }
@@ -361,14 +357,6 @@ async function fadeHourly(settings) {
 }
 
 /**
- * Tell open extension pages (side panel "Closed today") that tabs were closed.
- * Replaces per-tab desktop notifications.
- */
-function notifyTabsClosed() {
-  chrome.runtime.sendMessage({ type: 'TABS_CLOSED' }).catch(() => {}); // no page open is fine
-}
-
-/**
  * Chrome refused a close/discard after the record was committed. If the tab is still
  * there, record why in `status`/`reason` and retry after another full timeout.
  */
@@ -413,11 +401,33 @@ async function closeDiscardedTab(tab, recordId, settings) {
     }
     await markClosedByTabSum(recordId);
     console.log(`[TabSum] Closed long-discarded tab ${tab.id} (${tab.url}).`);
-    notifyTabsClosed();
+    // Refresh the side panel's "Closed today"; no page open is fine.
+    chrome.runtime.sendMessage({ type: 'TABS_CLOSED' }).catch(() => {});
     await updateBadge();
   } catch (err) {
     console.error(`[TabSum] Error closing discarded tab ${tab.id}:`, err);
   }
+}
+
+/**
+ * The record fields both capture paths fill the same way. Tier and reason are the
+ * caller's, since a sweep classifies the page and a manual save does not.
+ */
+function captureFields(extracted, tab, lastActiveAt, summary) {
+  return {
+    url: extracted.url || tab.url,
+    title: extracted.title || tab.title,
+    domain: extracted.domain || extractDomain(tab.url),
+    favIconUrl: extracted.favIconUrl || tab.favIconUrl,
+    capturedAt: Date.now(),
+    lastActiveAt,
+    readingTimeMinutes: extracted.readingTimeMinutes || 1,
+    summary,
+    summarySource: summary.source,
+    cleanText: extracted.cleanText || '',
+    wordCount: extracted.wordCount || 0,
+    meta: extracted.meta
+  };
 }
 
 /**
@@ -451,16 +461,9 @@ async function processTabArchival(tab, settings, lastActiveTime) {
 
     // 4. TOCTOU Re-Check: Did user switch into tab or play audio while we were summarizing?
     //    Checked before anything is written, so an abort leaves no record behind.
-    let currentTab;
-    try {
-      currentTab = await chrome.tabs.get(tab.id);
-    } catch {
-      return; // Tab was already closed by user
-    }
-    if (!currentTab || currentTab.active || currentTab.audible) {
-      console.log(`[TabSum] Tab ${tab.id} became active or audible during processing. Aborting closure.`);
-      return;
-    }
+    //    A tab the user already closed rejects the get and aborts here too.
+    const live = await chrome.tabs.get(tab.id).catch(() => null);
+    if (!live || live.active || live.audible) return;
 
     // 5. Classify what the extractor counted, then decide close vs suspend. Both rules live
     //    in closure-policy.js; this function only carries them out.
@@ -472,20 +475,9 @@ async function processTabArchival(tab, settings, lastActiveTime) {
     // 6. Commit the final status BEFORE the destructive call, so a worker dying in
     //    between can't lose the archive.
     const record = await recordCapture({
-      url: extracted.url || tab.url,
-      title: extracted.title || tab.title,
-      domain: extracted.domain || extractDomain(tab.url),
-      favIconUrl: extracted.favIconUrl || tab.favIconUrl,
-      capturedAt: Date.now(),
-      lastActiveAt: lastActiveTime,
-      readingTimeMinutes: extracted.readingTimeMinutes || 1,
-      summary,
-      summarySource: summary.source,
-      cleanText: extracted.cleanText || '',
-      wordCount: extracted.wordCount || 0,
+      ...captureFields(extracted, tab, lastActiveTime, summary),
       closureTier: safety.tier,
-      closureReason,
-      meta: extracted.meta
+      closureReason
     }, shouldClose ? 'closed' : 'suspended');
 
     if (shouldClose) {
@@ -499,7 +491,8 @@ async function processTabArchival(tab, settings, lastActiveTime) {
         return;
       }
       await removeTimestamp(tab.id);
-      notifyTabsClosed();
+      // Refresh the side panel's "Closed today"; no page open is fine.
+      chrome.runtime.sendMessage({ type: 'TABS_CLOSED' }).catch(() => {});
     } else {
       // Soft discard: Inject sleeping tab indicator 💤 into title before discarding
       let addedPrefix = false;
@@ -572,20 +565,9 @@ async function archiveActiveTab(activeTab) {
 
   const summary = await summarizeContent(extracted, settings);
   const record = await recordCapture({
-    url: extracted.url || activeTab.url,
-    title: extracted.title || activeTab.title,
-    domain: extracted.domain || extractDomain(activeTab.url),
-    favIconUrl: extracted.favIconUrl || activeTab.favIconUrl,
-    capturedAt: Date.now(),
-    lastActiveAt: lastActive,
-    readingTimeMinutes: extracted.readingTimeMinutes || 1,
-    summary,
-    summarySource: summary.source,
-    cleanText: extracted.cleanText || '',
-    wordCount: extracted.wordCount || 0,
+    ...captureFields(extracted, activeTab, lastActive, summary),
     closureTier: classifyClosureSafety({ ...extracted.closureTelemetry, wordCount: extracted.wordCount }).tier,
-    closureReason: 'Saved manually; tab left open',
-    meta: extracted.meta
+    closureReason: 'Saved manually; tab left open'
   }, 'left-open'); // saved; the tab stays open
 
   await updateBadge();
@@ -599,32 +581,14 @@ async function handleCommand(command) {
   if (command === 'archive_active_tab') {
     try {
       const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!activeTab || !activeTab.id) {
-        console.warn('[TabSum] No active tab found for archive_active_tab command');
-        return;
-      }
-
       const result = await archiveActiveTab(activeTab);
       if (result?.success && result?.record) {
-        await updateBadge();
         showArchivedNotification(result.record.title || activeTab.title || 'Page');
       } else if (!result?.success) {
         console.warn('[TabSum] Could not archive tab via shortcut:', result?.error);
       }
     } catch (err) {
       console.error('[TabSum] Error executing archive_active_tab command:', err);
-    }
-  } else if (command === '_execute_action') {
-    // Only reachable via a TRIGGER_COMMAND message; Chrome handles the real _execute_action key itself.
-    if (chrome.sidePanel && chrome.sidePanel.open) {
-      try {
-        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (activeTab?.windowId) {
-          await chrome.sidePanel.open({ windowId: activeTab.windowId });
-        }
-      } catch (err) {
-        console.debug('[TabSum] Could not open side panel on command:', err);
-      }
     }
   }
 }
@@ -690,22 +654,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
 
-      if (message.type === 'GET_STATS') {
-        const stats = await getStats();
-        sendResponse({ success: true, stats });
-        return;
-      }
-
       if (message.type === 'CLOSE_SIDE_PANEL') {
         try {
-          if (chrome.sidePanel && typeof chrome.sidePanel.close === 'function') {
-            const windowId = message.windowId || sender.tab?.windowId;
-            if (windowId) {
-              await chrome.sidePanel.close({ windowId });
-            } else {
-              const currentWin = await chrome.windows.getCurrent();
-              await chrome.sidePanel.close({ windowId: currentWin.id });
-            }
+          const windowId = message.windowId || sender.tab?.windowId;
+          if (windowId) {
+            await chrome.sidePanel.close({ windowId });
+          } else {
+            const currentWin = await chrome.windows.getCurrent();
+            await chrome.sidePanel.close({ windowId: currentWin.id });
           }
           sendResponse({ success: true });
         } catch (err) {
