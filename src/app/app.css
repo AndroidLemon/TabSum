@@ -248,7 +248,6 @@ button {
 
 /* Export dropdown (opens upward from the sidebar footer) */
 .export-dropdown {
-  position: relative;
   flex: 1;
 }
 
@@ -268,6 +267,7 @@ button {
 .export-dropdown-menu {
   position-anchor: --export-dropdown-anchor;
   position: fixed;
+  /* Override the UA's [popover] { inset: 0 } so only bottom/left (below) are constrained */
   top: auto;
   right: auto;
   bottom: calc(anchor(top) + 8px);
@@ -280,9 +280,9 @@ button {
   padding: 6px;
   flex-direction: column;
   gap: 2px;
-  z-index: 100;
 }
 
+/* An unconditional author `display` here would beat the UA's [popover]:not(:popover-open) { display: none } by cascade origin */
 .export-dropdown-menu:popover-open {
   display: flex;
 }
