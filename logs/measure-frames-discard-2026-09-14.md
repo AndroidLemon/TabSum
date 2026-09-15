@@ -136,9 +136,9 @@ ad-supported news sites as a lower bound, not a stable number.
 ### Answering the two questions
 
 **How many corpus pages have >= 1 substantial cross-origin iframe?**
-Run 2: 1 of 48 reachable pages (bbc.com/news, and only because run 1 counted
-it — run 2 itself measured 0). Across both runs combined, exactly one corpus
-page ever showed a substantial cross-origin iframe: bbc.com/news. This is a
+Run 2: 0 of 48 reachable pages. Run 1: 1 of 47 (bbc.com/news). Across both
+runs combined, exactly one corpus page ever showed a substantial cross-origin
+iframe: bbc.com/news, and only in run 1. This is a
 rare event in the current 50-URL corpus, gated almost entirely by ad-network
 loading timing on ad-supported publisher pages, not something this corpus can
 put a stable base rate on.
@@ -230,10 +230,10 @@ This time the crash happened even earlier — during/immediately after the
 `discard()` call itself, before its result could even be logged. Same
 SIGSEGV signature.
 
-All three raw crash logs are saved: `tests/measure/discard_state_output.txt`
-(headless), `tests/measure/discard_state_output_headed.txt` (headed
-off-screen), `tests/measure/discard_state_output_nogpu.txt` (headless,
-GPU disabled).
+The three raw crash outputs (headless, headed off-screen, headless with GPU
+disabled) were not retained; the crash signature and the point each run
+reached are quoted above, and `node tests/measure/discard_state.js` with
+`TABSUM_NO_GPU=1` or the headed flag reproduces them.
 
 No configuration reached the reactivation/read-back step, so **no
 input/textarea/contenteditable survival data was collected** — for either the
@@ -282,9 +282,9 @@ Five configurations, one crash address. This is a Playwright-Chromium-on-macOS
 problem, not a GPU one, and no further harness retry will change it.
 
 **Manual check (one minute, in the user's own Chrome):** load the extension
-unpacked via chrome://extensions, run `node tests/measure/discard_state.js`
-just for its mock server (or open any page with a form), type into a text
-input, a textarea and a contenteditable, open chrome://discards and discard
+unpacked via chrome://extensions, open any page with a text input, a textarea
+and a contenteditable (a GitHub issue page has all three; `discard_state.js`
+has no server-only mode), type into each, open chrome://discards and discard
 that tab, click the tab, and see which of the three values survived. Record
 the answer here. Until then the soft-discard path in `service-worker.js` is
 assumed to be able to lose contenteditable state, because Chrome's page-state

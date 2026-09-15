@@ -89,6 +89,21 @@ const TEXTNODE_CELL_WRAPPER = 'opened this issue';
 // nowhere -- GitHub's `<relative-time>Sep 14, 2026</relative-time>` renders
 // "2 days ago" from its shadow root instead -- so it must not reach cleanText.
 const TEXTNODE_UNSLOTTED = makeWords('tnunslotted-', 10);
+// A hidden `<article style="display:none">` sitting BEFORE the real
+// `.entry-content` -- the responsive mobile/desktop duplicate-container shape.
+// Without the "root must also be rendered" fix this wins the container pick
+// outright, every text node under it fails the rendered test, and the whole
+// harvest comes back empty.
+const TEXTNODE_HIDDEN_ARTICLE = makeWords('tnhiddenart-', 12);
+// A visible <div> whose own text must count even though it also holds a
+// hidden nested <div> -- the shape the old element-level hasBlockingDescendant
+// check lost; the text-node walk keeps it by construction.
+const TEXTNODE_VISIBLE_PARENT = makeWords('tnvisparent-', 8);
+const TEXTNODE_HIDDEN_CHILD = makeWords('tnhiddenchild-', 6);
+// A visible <p> whose own words count, holding an inline `<span class="ad">`
+// whose words must not -- the TreeWalker REJECTs NOISE_SELECTOR subtrees.
+const TEXTNODE_AD_PARAGRAPH = makeWords('tnadpara-', 8);
+const TEXTNODE_AD_SPAN = makeWords('tnadspan-', 5);
 
 // Mock server serving test pages for dirty checks and lifecycle testing
 function createMockServer() {
@@ -414,6 +429,7 @@ function createMockServer() {
         <head><title>Text Nodes Test</title></head>
         <body>
           <aside class="sidebar"><article><p>${TEXTNODE_SIDEBAR}</p></article></aside>
+          <article style="display:none"><p>${TEXTNODE_HIDDEN_ARTICLE}</p></article>
           <div class="entry-content">
             <table>
               <tr><td><div class="commtext">${TEXTNODE_A}<p>${TEXTNODE_B}<p>${TEXTNODE_C}</div></td></tr>
@@ -422,6 +438,8 @@ function createMockServer() {
             <p class="reveal" style="opacity:0">${TEXTNODE_REVEAL}</p>
             <p>Line one<br>Line two</p>
             <p><span id="shadow-host">${TEXTNODE_UNSLOTTED}</span></p>
+            <div>${TEXTNODE_VISIBLE_PARENT} <div style="display:none">${TEXTNODE_HIDDEN_CHILD}</div></div>
+            <p>${TEXTNODE_AD_PARAGRAPH} <span class="ad">${TEXTNODE_AD_SPAN}</span></p>
           </div>
           <script>
             document.getElementById('shadow-host')
@@ -749,11 +767,12 @@ async function runHardeningTests() {
 
     const expectedTextNodesWordCount = [
       TEXTNODE_A, TEXTNODE_B, TEXTNODE_C, TEXTNODE_REVEAL,
-      TEXTNODE_BR_LINES, TEXTNODE_CELL_WRAPPER
+      TEXTNODE_BR_LINES, TEXTNODE_CELL_WRAPPER,
+      TEXTNODE_VISIBLE_PARENT, TEXTNODE_AD_PARAGRAPH
     ].join(' ').trim().split(/\s+/).filter(Boolean).length;
 
     assert.strictEqual(textNodesResult.wordCount, expectedTextNodesWordCount,
-      `wordCount must equal exactly A + B + C + reveal + "${TEXTNODE_BR_LINES}" + "${TEXTNODE_CELL_WRAPPER}" (${expectedTextNodesWordCount}), got ${textNodesResult.wordCount}`);
+      `wordCount must equal exactly A + B + C + reveal + "${TEXTNODE_BR_LINES}" + "${TEXTNODE_CELL_WRAPPER}" + visible-parent + ad-paragraph (${expectedTextNodesWordCount}), got ${textNodesResult.wordCount}`);
 
     // Each nested-block sibling contributes exactly once: not zero (the div's
     // own text dropped because it holds <p>s) and not twice (double-counted).
@@ -772,7 +791,18 @@ async function runHardeningTests() {
     assert.ok(textNodesResult.cleanText.includes(TEXTNODE_CELL_WRAPPER),
       'a wrapper <div> inside a <td> must inherit the cell\'s no-floor');
 
-    console.log(`✓ /text-nodes: wordCount === ${expectedTextNodesWordCount} (nested-block siblings each counted once, opacity:0 prose kept, sidebar <article> skipped, <br> breaks words, <td> no-floor inherited by a wrapper <div>)`);
+    assert.ok(!textNodesResult.cleanText.includes('tnhiddenart-0'),
+      'a hidden <article style="display:none"> preceding the real .entry-content must not win the container pick, and must not be counted itself');
+    assert.ok(textNodesResult.cleanText.includes('tnvisparent-0'),
+      'a visible <div>\'s own text must be harvested even though it also holds a hidden nested <div>');
+    assert.ok(!textNodesResult.cleanText.includes('tnhiddenchild-0'),
+      'a hidden nested <div style="display:none"> inside a visible parent must not be counted');
+    assert.ok(textNodesResult.cleanText.includes('tnadpara-0'),
+      'a visible <p>\'s own text must be harvested even though it holds an inline <span class="ad">');
+    assert.ok(!textNodesResult.cleanText.includes('tnadspan-0'),
+      'an inline <span class="ad"> must be excluded -- the TreeWalker REJECTs NOISE_SELECTOR subtrees');
+
+    console.log(`✓ /text-nodes: wordCount === ${expectedTextNodesWordCount} (nested-block siblings each counted once, opacity:0 prose kept, sidebar <article> skipped, hidden container decoy skipped, hidden child div excluded, inline .ad excluded, <br> breaks words, <td> no-floor inherited by a wrapper <div>)`);
     await textNodesPage.close();
 
     // 4a-4e. designMode on the TOP document (set by copy-enabler extensions on

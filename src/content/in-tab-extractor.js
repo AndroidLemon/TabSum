@@ -339,12 +339,12 @@
     // `<aside class="sidebar"><article>teaser</article></aside>` sitting above
     // the real `.entry-content` would otherwise win and the harvest would be
     // the teaser alone.
-    const root = Array.from(document.querySelectorAll(CONTAINER_SELECTOR))
-      .find((el) => !el.closest(NOISE_SELECTOR)) || document.body;
-
-    // Insertion order is DOM order of each group's first text node, so the
-    // blocks come out in reading order without a sort.
-    const groups = new Map();
+    //
+    // The candidate must also be RENDERED: responsive sites ship a mobile/desktop
+    // pair of duplicate containers and hide one with `display:none`, so a hidden
+    // `<article>` that precedes the real `.entry-content` in document order would
+    // otherwise win outright -- every text node under it then fails the per-node
+    // rendered test and the harvest comes back empty.
     const renderedCache = new WeakMap();
     function isRendered(el) {
       if (renderedCache.has(el)) return renderedCache.get(el);
@@ -352,6 +352,12 @@
       renderedCache.set(el, result);
       return result;
     }
+    const root = Array.from(document.querySelectorAll(CONTAINER_SELECTOR))
+      .find((el) => !el.closest(NOISE_SELECTOR) && isRendered(el)) || document.body;
+
+    // Insertion order is DOM order of each group's first text node, so the
+    // blocks come out in reading order without a sort.
+    const groups = new Map();
 
     // closest() may climb past the root (root itself need not be a group tag),
     // so anything it finds outside the root falls back to the root's own group.
