@@ -5,6 +5,7 @@
 import assert from 'node:assert';
 import { summarizeWithHeuristics, summarizeContent, normalizeSummary, excerpt } from '../src/ai/summarizer.js';
 import { extractDomain, DEFAULT_SETTINGS } from '../src/storage/db.js';
+import { withTimeout } from '../src/shared/with-timeout.js';
 
 console.log('--- Running TabSum Core Verification Tests ---');
 
@@ -120,6 +121,11 @@ assert.ok(excerpt(allShort, 6000).startsWith('Story title number 0'), 'With no r
 assert.ok(excerpt(chromeThenArticle, 400).length <= 400, 'Excerpt never exceeds maxChars');
 assert.strictEqual(excerpt('x'.repeat(7000), 6000).length, 6000, 'A single oversized block is hard-sliced to maxChars');
 console.log('✓ Block-aware excerpt passed');
+
+console.log('Testing withTimeout...');
+await assert.rejects(withTimeout(new Promise(() => {}), 10), /timed out/, 'A hung promise must reject with a timeout error');
+assert.strictEqual(await withTimeout(Promise.resolve(1), 10), 1, 'A settled promise passes its value through');
+console.log('✓ withTimeout passed');
 
 // Test 8: In-tab extractor title separator regex (honest regex-only test;
 // the extractor stays a self-contained IIFE injected by chrome.scripting)

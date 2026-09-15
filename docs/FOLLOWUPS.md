@@ -95,12 +95,6 @@ Last updated 2026-09-15, after PR #4 (extraction-v1) merged.
 
 ## Service worker
 
-14. **No timeout on the sequential sweep's `executeScript`.**
-    A tab whose renderer hangs blocks the whole archival sweep. Wrap each
-    injection in `Promise.race` with a timeout and skip the tab. From review
-    finding C8. Small.
-    *Trigger:* a sweep that never finishes.
-
 15. **Does `chrome.tabs.discard()` lose contenteditable drafts?**
     The soft-suspend path assumes yes and holds such tabs, but it has never
     been measured: Playwright Chromium segfaults on `discard()` in every

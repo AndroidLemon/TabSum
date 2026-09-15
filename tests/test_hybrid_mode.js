@@ -608,6 +608,64 @@ async function runHybridTests() {
     assert.ok(tier2.rec.closedAt > 0, 'Tier 2 close must stamp closedAt (Closed today)');
     console.log('✓ Long-suspended tab was closed by tier 2 and recorded as archived');
 
+    // --- Test 8: A hung executeScript is skipped after EXTRACT_TIMEOUT_MS and does not wedge isSweeping ---
+    console.log('\n--- Test 8: Hung extraction cannot stall the sweep ---');
+    const hungPage = await context.newPage();
+    await hungPage.goto(`http://localhost:${PORT}/pure-article`);
+    await hungPage.waitForLoadState('networkidle');
+    const nextPage = await context.newPage();
+    await nextPage.goto(`http://localhost:${PORT}/article-with-search`);
+    await nextPage.waitForLoadState('networkidle');
+
+    const hungTabId = await background.evaluate(async () => {
+      const tabs = await chrome.tabs.query({});
+      const helper = tabs.find(t => t.url.includes('src/options/index.html'));
+      if (helper) await chrome.tabs.update(helper.id, { active: true });
+      const hung = tabs.find(t => t.url.includes('/pure-article'));
+      const next = tabs.find(t => t.url.includes('/article-with-search'));
+      const data = await chrome.storage.session.get('tabTimestamps');
+      const timestamps = data.tabTimestamps || {};
+      timestamps[hung.id] = Date.now() - 120000;
+      timestamps[next.id] = Date.now() - 120000;
+      await chrome.storage.session.set({ tabTimestamps: timestamps });
+      // The FIRST injection into the hung tab never settles; every other call is real.
+      globalThis.__realExecuteScript = chrome.scripting.executeScript.bind(chrome.scripting);
+      let hungOnce = false;
+      chrome.scripting.executeScript = (opts) => {
+        if (opts.target?.tabId === hung.id && !hungOnce) { hungOnce = true; return new Promise(() => {}); }
+        return globalThis.__realExecuteScript(opts);
+      };
+      return hung.id;
+    });
+    await new Promise(r => setTimeout(r, 400));
+
+    // TRIGGER_SWEEP_NOW responds only after performInactivitySweep returns, so the round
+    // trip is the sweep's duration: >= 10s proves the timeout fired.
+    const sweepStarted = Date.now();
+    await helperPage.evaluate(() => new Promise(resolve => {
+      chrome.runtime.sendMessage({ type: 'TRIGGER_SWEEP_NOW' }, resolve);
+    }));
+    assert.ok(Date.now() - sweepStarted >= 10000, 'The sweep must wait out EXTRACT_TIMEOUT_MS on the hung tab, not finish early');
+
+    const afterHungSweep = await background.evaluate(async (id) => {
+      const tabs = await chrome.tabs.query({});
+      return { hungOpen: tabs.some(t => t.id === id), nextOpen: tabs.some(t => t.url.includes('/article-with-search')) };
+    }, hungTabId);
+    assert.strictEqual(afterHungSweep.hungOpen, true, 'The hung tab is skipped, not closed');
+    assert.strictEqual(afterHungSweep.nextOpen, false, 'The tab after the hung one must still be archived in the same sweep');
+    console.log('✓ Sweep timed out the hung tab and went on to close the next one');
+
+    // isSweeping was released in finally: the next sweep runs, and the hung tab (timestamp
+    // untouched by the error path) gets a real injection this time and closes.
+    await helperPage.evaluate(() => new Promise(resolve => {
+      chrome.runtime.sendMessage({ type: 'TRIGGER_SWEEP_NOW' }, resolve);
+    }));
+    await new Promise(r => setTimeout(r, 1000));
+    const hungStillOpen = await background.evaluate(async (id) => (await chrome.tabs.query({})).some(t => t.id === id), hungTabId);
+    await background.evaluate(() => { chrome.scripting.executeScript = globalThis.__realExecuteScript; });
+    assert.strictEqual(hungStillOpen, false, 'A second sweep must not be refused by a stuck isSweeping flag');
+    console.log('✓ Second sweep ran and archived the previously hung tab');
+
     // Clean up test tabs
     await bgUntouchedForm.close();
     await hubPage.close();

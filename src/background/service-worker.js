@@ -28,11 +28,14 @@ import {
   canCloseWith,
   isScriptableUrl
 } from '../shared/closure-policy.js';
+import { withTimeout } from '../shared/with-timeout.js';
 
 const ALARM_NAME = 'tabsum-inactivity-sweep';
 const SWEEP_INTERVAL_MINUTES = 1;
 const IDLE_DETECTION_SECONDS = 60;
 const SLEEP_GAP_MS = 5 * 60 * 1000; // sweep gap that means the machine was asleep
+// The extractor measures ~50ms on a 13k-element page; 10s only ever fires on a hung renderer.
+const EXTRACT_TIMEOUT_MS = 10000;
 
 // Chrome may drop alarms across browser restarts; make sure ours exists whenever the worker starts
 chrome.alarms.get(ALARM_NAME).then((alarm) => {
@@ -425,10 +428,10 @@ async function processTabArchival(tab, settings, lastActiveTime) {
     // 1. Inject in-tab content extractor
     // allFrames: the zero-loss guard is blind to iframe-hosted editors otherwise —
     // a TinyMCE/CKEditor draft lives in a frame the top document cannot reach.
-    const results = await chrome.scripting.executeScript({
+    const results = await withTimeout(chrome.scripting.executeScript({
       target: { tabId: tab.id, allFrames: true },
       files: ['src/content/in-tab-extractor.js']
-    });
+    }), EXTRACT_TIMEOUT_MS, 'Extraction');
 
     // 2. Skip empty extractions and tabs with unsaved work; look again after another full timeout
     const extracted = mergeFrameExtractions(results);
@@ -557,10 +560,10 @@ async function archiveActiveTab(activeTab) {
   const lastActive = timestamps[activeTab.id] || Date.now();
 
   // Extract and archive immediately
-  const results = await chrome.scripting.executeScript({
+  const results = await withTimeout(chrome.scripting.executeScript({
     target: { tabId: activeTab.id, allFrames: true },
     files: ['src/content/in-tab-extractor.js']
-  });
+  }), EXTRACT_TIMEOUT_MS, 'Extraction');
 
   const extracted = mergeFrameExtractions(results);
   if (!extracted) {

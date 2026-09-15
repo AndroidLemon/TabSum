@@ -5,6 +5,8 @@
  * Tier 2: Gemini Flash BYOK (Optional cloud API)
  */
 
+import { withTimeout } from '../shared/with-timeout.js';
+
 // Bound every AI call so a hung tier can't stall a sweep.
 const TIER_TIMEOUT_MS = 20000;
 // Local models on modest hardware can need minutes; that tier streams and keeps the worker alive.
@@ -27,14 +29,6 @@ const SUMMARY_SCHEMA = {
 const SYSTEM_PROMPT =
   'You are an executive knowledge assistant. Given an article, respond with JSON: ' +
   '{ "tldr": "1-2 sentence overview", "bullets": ["takeaway 1", "takeaway 2", "takeaway 3"], "tags": ["tag1", "tag2"] }';
-
-function withTimeout(promise, ms) {
-  let timer;
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('AI tier timed out')), ms); })
-  ]).finally(() => clearTimeout(timer));
-}
 
 /**
  * Main summarization dispatcher
@@ -79,7 +73,7 @@ export async function summarizeContent(extractedData, settings = {}) {
 
   for (const { source, run, timeoutMs = TIER_TIMEOUT_MS } of tiers) {
     try {
-      const raw = await withTimeout(run(), timeoutMs);
+      const raw = await withTimeout(run(), timeoutMs, 'AI tier');
       const normalized = raw && normalizeSummary(raw);
       if (normalized?.tldr) return { ...normalized, source };
     } catch (err) {
