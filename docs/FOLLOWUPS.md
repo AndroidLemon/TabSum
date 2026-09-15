@@ -6,7 +6,7 @@ is a bug that ships broken; the leak gate is 0 of 21 and close recall is 91.4%
 (`logs/baseline-followups1.md`). Ordered within each section by how likely the
 trigger is to fire during dogfooding.
 
-Last updated 2026-09-15, after follow-ups round 1 (items 1, 2, 9, 14, 19, 20 done).
+Last updated 2026-09-15, after follow-ups round 1 (items 1, 2, 9, 14, 19, 20 done; item 23 is 14's residual).
 
 ## Summariser
 
@@ -97,7 +97,7 @@ Last updated 2026-09-15, after follow-ups round 1 (items 1, 2, 9, 14, 19, 20 don
 
 ## Service worker
 
-14. **The sweep timeout is per injection, not per sweep.**
+23. **The sweep timeout is per injection, not per sweep.**
     `EXTRACT_TIMEOUT_MS` bounds each `executeScript` at 10s, so N tabs on
     one hung renderer cost N x 10s and a sweep with six or more outlives the
     one-minute alarm. Finite and self-healing (the next alarm is skipped by

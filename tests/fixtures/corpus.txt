@@ -91,10 +91,11 @@ https://pypi.org/search/?q=readability
 # --- media ---
 https://www.youtube.com/watch?v=dQw4w9WgXcQ
 
-# --- long AND interactive: the only pages that reach rule 1 before rule 4 ---
-# (QA practice sites are under 120 words, so rule 4 fires first and rule 1 is never
-#  isolated. Probed 2026-09-15 with the real UA: all three load headless; the
-#  duckduckgo.com/html endpoint 403s in the runner and was dropped.)
+# --- long AND interactive: more pages where rule 1 is judged before rule 4 fires ---
+# (QA practice sites are under 120 words, so rule 4 fires first there. jsonformatter and
+#  petstore.swagger already sit past the floor; these widen rule 1's evidence to more shapes.
+#  Probed 2026-09-15 with the real UA: all three load headless; the duckduckgo.com/html
+#  endpoint 403s in the runner and was dropped.)
 https://sqliteonline.com/
 https://editor.swagger.io/
 https://www.typescriptlang.org/play

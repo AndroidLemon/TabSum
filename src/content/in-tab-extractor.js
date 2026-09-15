@@ -190,12 +190,14 @@
     // Not checked, because page scripts change them without the user and would block every close:
     // checkboxes/radios (Wikipedia's menus and appearance prefs are JS-set checkboxes) and
     // color/range (implicit non-empty defaults look like edits).
-    // pkg.go.dev folds a "Run this example" textarea under a closed <details> for every
-    // example (17 on net/http), value filled by script on load, so a pure docs page reported
-    // unsaved work on every sweep and could never be archived. Content the page folded away
-    // is not a draft. Deliberately narrower than "unrendered = clean": virtualized editors
-    // park the draft in an off-screen textarea, and GitHub's comment box goes display:none in
-    // Preview mode with the draft still inside it, so those must stay dirty.
+    // pkg.go.dev folds a "Run this example" textarea under a closed <details> for every example
+    // (17 on net/http), value filled by script on load, so a pure docs page reported unsaved
+    // work on every sweep and could never be archived. Content the page folded away is not a
+    // draft. Applied to value-bearing controls only; rich-text editors stay dirty regardless,
+    // they are rarer and costlier to get wrong. Deliberately narrower than "unrendered = clean":
+    // virtualized editors park the draft in an off-screen textarea, and GitHub's comment box
+    // goes display:none in Preview mode with the draft still inside it, so those must stay
+    // dirty.
     // ponytail: a user who opened the details, typed, and closed it again loses that draft.
     // Upgrade path: snapshot control values at document_idle and diff against those.
     // A control in the <summary> itself is rendered even when the details is closed, so it
