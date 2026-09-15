@@ -135,7 +135,11 @@ export async function runSortingTests() {
   assert.strictEqual(undefinedSortTabs[0].id, 'tab-3', 'Undefined sortBy must fall back to newest-first');
   assert.strictEqual(undefinedSortTabs[1].id, 'tab-2');
   assert.strictEqual(undefinedSortTabs[2].id, 'tab-1');
-  console.log('✓ Unknown/empty/undefined sortBy fallback verified');
+  const protoSortTabs = await getArchivedTabs({ sortBy: '__proto__' });
+  assert.strictEqual(protoSortTabs[0].id, 'tab-3', '"__proto__" sortBy must fall back to newest-first, not resolve an inherited comparator');
+  assert.strictEqual(protoSortTabs[1].id, 'tab-2');
+  assert.strictEqual(protoSortTabs[2].id, 'tab-1');
+  console.log('✓ Unknown/empty/undefined/"__proto__" sortBy fallback verified');
 
   console.log('--- All Sorting Unit Tests Passed Successfully! ---');
 }
