@@ -199,6 +199,23 @@ export function summarizeWithHeuristics({ title, cleanText, meta, domain }) {
 }
 
 /**
+ * Prompt window by block, not by character. The harvest walks the DOM in order, so any
+ * pre-article chrome the noise list misses sits ahead of the article; start one block
+ * before the first real paragraph (>= 200 chars) so its heading survives, and take whole
+ * blocks from there. With no real paragraph (HN front page) start at 0.
+ */
+export function excerpt(cleanText, maxChars) {
+  const blocks = cleanText.split('\n\n');
+  const first = blocks.findIndex(b => b.length >= 200);
+  let text = '';
+  for (const b of blocks.slice(Math.max(0, first - 1))) {
+    if (text && text.length + 2 + b.length > maxChars) break;
+    text += (text ? '\n\n' : '') + b;
+  }
+  return text.slice(0, maxChars);
+}
+
+/**
  * Tier 1: Chrome built-in Prompt API (Gemini Nano on-device)
  * https://developer.chrome.com/docs/ai/prompt-api
  */
@@ -223,7 +240,7 @@ async function summarizeWithChromePromptAPI({ title, cleanText }) {
       signal
     });
 
-    const prompt = `Title: ${title}\n\nArticle excerpt:\n${cleanText.slice(0, 3000)}`;
+    const prompt = `Title: ${title}\n\nArticle excerpt:\n${excerpt(cleanText, 3000)}`;
     const response = await session.prompt(prompt, {
       responseConstraint: SUMMARY_SCHEMA,
       signal
@@ -253,7 +270,7 @@ async function summarizeWithGeminiAPI({ title, cleanText }, apiKey) {
 
   Title: ${title}
   Content:
-  ${cleanText.slice(0, 6000)}`;
+  ${excerpt(cleanText, 6000)}`;
 
   const res = await fetch(url, {
     method: 'POST',
@@ -312,7 +329,7 @@ async function summarizeWithOpenAICompatible({ title, cleanText }, settings) {
         temperature: 0.2,
         messages: [
           { role: 'system', content: `${SYSTEM_PROMPT} Reply with the JSON object only.` },
-          { role: 'user', content: `Title: ${title}\n\nArticle excerpt:\n${cleanText.slice(0, 6000)}` }
+          { role: 'user', content: `Title: ${title}\n\nArticle excerpt:\n${excerpt(cleanText, 6000)}` }
         ]
       }),
       signal: AbortSignal.timeout(LOCAL_TIMEOUT_MS)

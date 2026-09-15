@@ -10,15 +10,6 @@ Last updated 2026-09-15, after PR #4 (extraction-v1) merged.
 
 ## Summariser
 
-1. **Slice the prompt window by block, not by character.**
-   `summarizer.js` sends `cleanText.slice(0, 3000)` (Prompt API) or
-   `slice(0, 6000)` (Gemini, OpenAI-compatible). The harvest now walks every
-   block in DOM order, so any pre-article chrome the noise list does not catch
-   fills the front of that window ahead of the article. Fix: skip runs of
-   short fragments before the first long paragraph, or take the first N blocks
-   over a length floor. From the round-2 review (finding C6). Small.
-   *Trigger:* a summary that describes the site's menu instead of the page.
-
 3. **Is Hacker News worth summarising at all?**
    The front page now extracts at 99.9% recall and closes, but a summary of
    thirty story titles may be useless. Answer is a corpus label change

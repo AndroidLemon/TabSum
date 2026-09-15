@@ -3,7 +3,7 @@
  */
 
 import assert from 'node:assert';
-import { summarizeWithHeuristics, summarizeContent, normalizeSummary } from '../src/ai/summarizer.js';
+import { summarizeWithHeuristics, summarizeContent, normalizeSummary, excerpt } from '../src/ai/summarizer.js';
 import { extractDomain, DEFAULT_SETTINGS } from '../src/storage/db.js';
 
 console.log('--- Running TabSum Core Verification Tests ---');
@@ -107,6 +107,19 @@ assert.deepStrictEqual(lowConfidenceSummary.bullets, [], 'Low-confidence pages s
 assert.ok(lowConfidenceSummary.tldr, 'Low-confidence pages should still have a tldr');
 assert.strictEqual(lowConfidenceSummary.source, 'heuristic', 'Summaries report which tier wrote them');
 console.log('✓ Low-confidence bullets passed');
+
+console.log('Testing block-aware excerpt...');
+const nav = Array.from({ length: 12 }, (_, i) => `Nav item ${i}`);
+const heading = 'The Actual Article Heading';
+const paragraph = 'Real prose sentence that carries the article. '.repeat(7); // 329 chars
+const chromeThenArticle = [...nav, heading, paragraph, 'Closing remark.'].join('\n\n');
+assert.ok(excerpt(chromeThenArticle, 6000).startsWith(heading), 'Excerpt starts at the heading before the first real paragraph');
+assert.ok(!excerpt(chromeThenArticle, 6000).includes('Nav item'), 'Nav fragments ahead of the article are dropped');
+const allShort = Array.from({ length: 30 }, (_, i) => `Story title number ${i} on the front page`).join('\n\n');
+assert.ok(excerpt(allShort, 6000).startsWith('Story title number 0'), 'With no real paragraph (HN front page) the excerpt starts at block 0');
+assert.ok(excerpt(chromeThenArticle, 400).length <= 400, 'Excerpt never exceeds maxChars');
+assert.strictEqual(excerpt('x'.repeat(7000), 6000).length, 6000, 'A single oversized block is hard-sliced to maxChars');
+console.log('✓ Block-aware excerpt passed');
 
 // Test 8: In-tab extractor title separator regex (honest regex-only test;
 // the extractor stays a self-contained IIFE injected by chrome.scripting)
