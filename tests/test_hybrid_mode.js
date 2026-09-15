@@ -12,7 +12,7 @@ import { classifyClosureSafety } from '../src/shared/closure-policy.js';
 import { chromium } from '@playwright/test';
 
 const PORT = 8893;
-import { buildTestExtension, extensionLaunchOptions } from './helpers/test-extension.js';
+import { buildTestExtension, extensionLaunchOptions, waitForServiceWorker } from './helpers/test-extension.js';
 
 const EXTENSION_PATH = buildTestExtension();
 const USER_DATA_DIR = path.resolve('./tests/.playwright_user_data_hybrid');
@@ -209,10 +209,7 @@ async function runHybridTests() {
   const context = await chromium.launchPersistentContext(USER_DATA_DIR,
     extensionLaunchOptions(EXTENSION_PATH, ['--no-sandbox']));
 
-  let [background] = context.serviceWorkers();
-  if (!background) {
-    background = await context.waitForEvent('serviceworker', { timeout: 7000 });
-  }
+  const background = await waitForServiceWorker(context, 7000);
 
   const extensionId = background.url().split('/')[2];
   console.log(`✓ Extension loaded with ID: ${extensionId}`);
