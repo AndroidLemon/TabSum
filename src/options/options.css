@@ -148,11 +148,14 @@ body {
 .permission-card.granted {
   background: var(--bg-card);
   border-color: var(--border-color);
-  opacity: 0.6;
 }
 
 .permission-card.granted .permission-status {
   color: var(--success);
+}
+
+.permission-card.granted #grant-perm-btn {
+  opacity: 0.6;
 }
 
 /* Setting Rows */

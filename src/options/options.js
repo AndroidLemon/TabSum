@@ -191,13 +191,10 @@ function setupListeners() {
 async function updateStorageMeter() {
   try {
     const estimate = await getStorageEstimate();
-    const meterEl = document.getElementById('storage-meter-text');
-    if (meterEl) {
-      const count = estimate.itemCount || 0;
-      const bytes = estimate.byteEstimate || 0;
-      const kb = Math.round(bytes / 1024);
-      meterEl.textContent = `Current Storage: ${count} tabs (~${kb} KB)`;
-    }
+    const count = estimate.itemCount || 0;
+    const bytes = estimate.byteEstimate || 0;
+    const kb = Math.round(bytes / 1024);
+    document.getElementById('storage-meter-text').textContent = `Current Storage: ${count} tabs (~${kb} KB)`;
   } catch (err) {
     console.error('Failed to update storage meter:', err);
   }
