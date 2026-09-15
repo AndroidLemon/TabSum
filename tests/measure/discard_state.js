@@ -143,7 +143,7 @@ async function runCase(context, background, route, label) {
     return { label, before, error: `readValues after reactivate threw: ${err.message}` };
   }
 
-  await pw.close().catch(() => {});
+  await reactivatedPage.close().catch(() => {});
   return { label, before, after };
 }
 
@@ -181,7 +181,7 @@ async function main() {
         console.log(`  ERROR: ${r.error}`);
         continue;
       }
-      const survived = (field) => r.after[field] === r.before[field] && r.before[field];
+      const survived = (field) => !!(r.after[field] === r.before[field] && r.before[field]);
       console.log(`  input:            typed="${r.before.input}" after="${r.after.input}" survived=${survived('input')}`);
       console.log(`  textarea:         typed="${r.before.textarea}" after="${r.after.textarea}" survived=${survived('textarea')}`);
       console.log(`  contentEditable:  typed="${r.before.contentEditable}" after="${r.after.contentEditable}" survived=${survived('contentEditable')}`);
