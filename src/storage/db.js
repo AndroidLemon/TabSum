@@ -329,8 +329,9 @@ async function updateRecord(id, mutate) {
  * Record lifecycle.
  *
  * `status`, `closedAt` and `restoredAt` are one state machine with one invariant, so nothing
- * outside this block writes them: callers name the transition that happened and the
- * timestamps are derived here. The states:
+ * outside this block writes them except `saveArchivedTab`, which sets them directly for JSON
+ * import: callers name the transition that happened and the timestamps are derived here. The
+ * states:
  *
  *   captured   summary saved, tab still fully open (manual archive, or Chrome refused)
  *   discarded  tab suspended by TabSum, still in the tab strip

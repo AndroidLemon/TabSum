@@ -18,9 +18,10 @@
  *   6. Read back the three values from the reactivated tab.
  * Repeated once with autocomplete="off" on the <form>.
  *
- * Known hazard (tests/test_hybrid_mode.js:297): a mocked-out comment there
- * says real chrome.tabs.discard() has caused a "SwiftShader compositor
- * segfault" in this project's test environment before. This script is
+ * Known hazard (tests/test_hybrid_mode.js, the "Mock chrome.tabs.discard in
+ * test environment" comment): it says real chrome.tabs.discard() has caused a
+ * "SwiftShader compositor segfault" in this project's test environment
+ * before. This script is
  * intentionally isolated in its own process (not sharing a run with
  * frame_gap.js) so a crash here doesn't cost the other measurement.
  */

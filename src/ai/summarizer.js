@@ -34,7 +34,7 @@ const SYSTEM_PROMPT =
 
 /**
  * Main summarization dispatcher
- * @param {Object} extractedData { title, cleanText, meta, domain, wordCount, isLowConfidence }
+ * @param {Object} extractedData { title, cleanText, meta, domain, isLowConfidence }
  * @param {Object} settings { aiProvider, geminiApiKey, openaiBaseUrl, openaiModel, openaiApiKey }
  * @returns {Promise<{ tldr: string, bullets: string[], tags: string[], source: 'gemini-api'|'openai-compatible'|'prompt-api'|'heuristic' }>}
  *   `source` says which tier wrote it; auto-close only trusts AI-written summaries.

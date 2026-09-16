@@ -26,9 +26,9 @@ Last updated 2026-09-15, after follow-ups round 1 (items 1, 2, 9, 14, 19, 20 don
    closed roots are invisible even for the unslotted-light-DOM rule
    (`shadowRoot === null`). Component-heavy reading pages could report near
    zero words and be held by rule 4, which is safe but wrong. Upgrade path is
-   recorded in the harvest comment: `Range.getClientRects()` per text node, or
-   a walker that descends open roots. Needs a corpus page that actually
-   exhibits it first. From reviews round 1 (Gemini) and round 4 (Copilot).
+   recorded in the harvest comment: `Range.getClientRects()` per text node, at
+   layout cost. Needs a corpus page that actually exhibits it first. From
+   reviews round 1 (Gemini) and round 4 (Copilot).
    Medium.
    *Trigger:* a reading page held by rule 4 whose text is inside web
    components.

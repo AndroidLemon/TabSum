@@ -14,8 +14,9 @@
  *
  * ponytail: no extension is loaded. in-tab-extractor.js is a self-contained IIFE
  * with no chrome.* calls, so page.evaluate(eval) returns identical telemetry
- * (same trick as tests/test_hybrid_mode.js:198). bypassCSP mirrors the isolated
- * world the real executeScript injection gets, which page CSP does not govern.
+ * (same trick as tests/test_hybrid_mode.js's `extractorCode` eval). bypassCSP
+ * mirrors the isolated world the real executeScript injection gets, which page
+ * CSP does not govern.
  *
  * Usage: node tests/telemetry_ratio.js [--corpus path] [--floor 0.80]
  */
@@ -94,15 +95,15 @@ async function measure(context, { url, expect }) {
     }
     if (!extracted?.success) return { url, expect, error: 'extractor returned no result' };
 
-    // Same bridge the service worker uses (service-worker.js:461): wordCount is a
-    // sibling of closureTelemetry, not inside it.
+    // Same bridge the service worker uses (service-worker.js's processTabArchival):
+    // wordCount is a sibling of closureTelemetry, not inside it.
     const safety = classifyClosureSafety({ ...extracted.closureTelemetry, wordCount: extracted.wordCount });
 
     // bodyWords: what the MAIN frame's body actually holds, independent of the
     // extractor's own block selection — the recall denominator. A separate
     // page.evaluate (not part of the extractor run above) using the same
-    // tokenising rule as wordCount (in-tab-extractor.js:303) so the two are
-    // comparable.
+    // tokenising rule as the `wordCount` computed right after
+    // extractCleanText() in in-tab-extractor.js, so the two are comparable.
     let bodyWords = null;
     try {
       bodyWords = await page.mainFrame().evaluate(() => {
