@@ -59,9 +59,12 @@ chrome.runtime.onInstalled.addListener(async () => {
   // removeAll first: onInstalled also fires on update, and create() rejects a duplicate id.
   // ponytail: both items always show, even on a domain already on that list. Upgrade path:
   // chrome.contextMenus.onShown to relabel/hide per-tab before the menu opens.
+  // Explicit parent, rather than letting Chrome auto-nest under the manifest name: that name
+  // contains an '&', which the auto-generated submenu eats as a mnemonic.
   await chrome.contextMenus.removeAll();
-  chrome.contextMenus.create({ id: 'excludedDomains', title: 'TabSum: never archive this site', contexts: ['tab'] });
-  chrome.contextMenus.create({ id: 'alwaysCloseDomains', title: 'TabSum: always close this site', contexts: ['tab'] });
+  chrome.contextMenus.create({ id: 'tabsum', title: 'TabSum', contexts: ['tab'] });
+  chrome.contextMenus.create({ id: 'excludedDomains', parentId: 'tabsum', title: 'Never archive this site', contexts: ['tab'] });
+  chrome.contextMenus.create({ id: 'alwaysCloseDomains', parentId: 'tabsum', title: 'Always close this site', contexts: ['tab'] });
 
   await initialize();
 });
@@ -610,7 +613,7 @@ chrome.commands.onCommand.addListener(handleCommand);
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   const domain = extractDomain(tab?.url);
-  if (!domain || !isScriptableUrl(tab.url)) return; // chrome://, the Web Store, etc.
+  if (!domain || !/^https?:/i.test(tab.url)) return; // only web origins belong on a domain list
   await setDomainList(domain, info.menuItemId);
   chrome.notifications.create({
     type: 'basic',

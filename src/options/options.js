@@ -278,10 +278,7 @@ function renderDomainChips(container, key) {
     `;
 
     chip.querySelector('.chip-remove-btn').addEventListener('click', async () => {
-      // Fresh read, not currentSettings: a context-menu add while Options is open must not
-      // be clobbered by the page's cached copy.
-      const fresh = await getSettings();
-      currentSettings = await saveSettings({ [key]: (fresh[key] || []).filter((d) => d !== domain) });
+      currentSettings = await saveSettings({ [key]: (currentSettings[key] || []).filter((d) => d !== domain) });
       renderAllChips();
       showToast(`Removed ${domain}`);
     });
@@ -316,3 +313,10 @@ function showToast(message) {
     toast.classList.add('hidden');
   }, 2400);
 }
+
+// Any write from elsewhere (the tab context menu) refreshes the cache the handlers save from.
+chrome.storage.onChanged.addListener(async (changes, area) => {
+  if (area !== 'local' || !changes.tabsum_settings) return;
+  currentSettings = await getSettings();
+  renderAllChips();
+});

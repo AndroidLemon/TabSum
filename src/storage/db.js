@@ -547,6 +547,7 @@ export async function saveSettings(settings) {
 }
 
 // Put domain on one list and take it off the other; the two are mutually exclusive.
+// ponytail: read-modify-write like saveSettings; two writers inside one storage round trip would need a queue.
 export async function setDomainList(domain, listKey) {
   const other = listKey === 'excludedDomains' ? 'alwaysCloseDomains' : 'excludedDomains';
   const s = await getSettings();
