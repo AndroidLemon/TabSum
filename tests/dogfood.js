@@ -411,7 +411,7 @@ async function runDogfood() {
   }
 
   // 3. Generate Report
-  const reportPath = path.resolve('./DOGFOOD_REPORT.md');
+  const reportPath = path.resolve('./logs/dogfood-report.md');
   const reportMd = `# TabSum Dogfooding & Browser Self-Test Report
 
 **Run Date**: ${telemetry.testStartedAt}  
@@ -434,6 +434,7 @@ ${telemetry.scenarios.map(s => `| **${s.name}** | \`${s.status}\` | ${s.metrics 
 - **IndexedDB Querying & UI**: Rendered cards, updated badge, executed debounced keyword search, and restored original URL with 1 click.
 `;
 
+  fs.mkdirSync(path.dirname(reportPath), { recursive: true });
   fs.writeFileSync(reportPath, reportMd);
   console.log(`\n📄 Dogfooding report saved to: ${reportPath}`);
   console.log('--- Suite Execution Finished ---');

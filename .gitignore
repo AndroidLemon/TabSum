@@ -1,7 +1,7 @@
 node_modules/
 tests/.playwright_user_data*
 .DS_Store
-DOGFOOD_REPORT.md
+logs/dogfood-report.md
 dist/
 # Run output, regenerated on every `npm run test:ratio`. The debate logs
 # beside it are decision records the plan cites, so they stay tracked.

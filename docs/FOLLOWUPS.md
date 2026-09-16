@@ -14,7 +14,7 @@ Last updated 2026-09-15, after follow-ups round 1 (items 1, 2, 9, 14, 19, 20 don
    The front page now extracts at 99.9% recall and closes, but a summary of
    thirty story titles may be useless. Answer is a corpus label change
    (`expect: suspend` or a new `expect: skip`), not an extractor change.
-   Originally raised in EXTRACTION_PLAN.md and ADR 0001. Tiny.
+   Originally raised in docs/EXTRACTION_PLAN.md and ADR 0001. Tiny.
    *Trigger:* dogfooding; look at the HN entry the first time it appears.
    Decision 2026-09-15: leave labelled `expect: close`; the first HN summary
    seen in dogfooding decides it.
