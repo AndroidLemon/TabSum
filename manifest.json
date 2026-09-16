@@ -3,6 +3,7 @@
   "name": "TabSum: Inactive Tab Summarizer & Knowledge Wiki",
   "version": "1.0.0",
   "description": "Automatically summarizes neglected tabs and archives them into an in-browser knowledge wiki with 1-click restore.",
+  "minimum_chrome_version": "126",
   "icons": {
     "16": "src/assets/icons/icon-16.png",
     "48": "src/assets/icons/icon-48.png",

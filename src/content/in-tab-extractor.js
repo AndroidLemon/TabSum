@@ -8,20 +8,13 @@
   // Deep query helper to traverse open Shadow DOM roots
   function queryAllDeep(selector, root = document) {
     const elements = Array.from(root.querySelectorAll(selector));
-    try {
-      const treeWalker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
-      let node = treeWalker.currentNode;
-      while (node) {
-        if (node.shadowRoot) {
-          elements.push(...queryAllDeep(selector, node.shadowRoot));
-        }
-        node = treeWalker.nextNode();
-      }
-    } catch {
-      // TreeWalker fallback
+    for (const el of root.querySelectorAll('*')) {
+      if (el.shadowRoot) elements.push(...queryAllDeep(selector, el.shadowRoot));
     }
     return elements;
   }
+
+  const typeOf = (i) => (i.getAttribute('type') || 'text').toLowerCase();
 
   // A control the user cannot see is not a control the user is using: virtualized
   // editors park off-screen capture textareas, docs sites ship collapsed menus, and
@@ -36,17 +29,7 @@
   // Array#filter/#some, which hands it the array index as a second argument.
   function isVisibleControl(el, options) {
     const checkOpacity = !(options && options.checkOpacity === false);
-    let rendered;
-    try {
-      rendered = el.checkVisibility({ checkOpacity, checkVisibilityCSS: true });
-    } catch {
-      // checkVisibility landed in Chrome 105. offsetParent is null for
-      // position:fixed even when the element is plainly on screen, so a fixed
-      // toolbar or docked editor panel must not be vetoed by it alone.
-      try {
-        rendered = el.offsetParent !== null || getComputedStyle(el).position === 'fixed';
-      } catch { rendered = true; }
-    }
+    const rendered = el.checkVisibility({ checkOpacity, checkVisibilityCSS: true });
     if (!rendered) return false;
 
     // checkVisibility reports display/visibility/opacity/content-visibility, but
@@ -131,9 +114,6 @@
   // control rather than dropping the signal.
   const APP_SURFACE_SELECTOR = ['canvas', '[role="application"]', '[role="dialog"]'].join(', ');
 
-  const EDITOR_SURFACE_SELECTOR = `${TEXT_EDITOR_SELECTOR}, ${APP_SURFACE_SELECTOR}`;
-
-
   // A select or toggle only means "data entry" if it sits in a real form. On its
   // own it is a docs version picker, a language switcher, or a CSS disclosure
   // hack driving a menu.
@@ -163,8 +143,7 @@
   const SEARCH_INPUT_NAMES = new Set(['q', 'query', 'search', 's']);
   function isSearchInput(input) {
     if (input.getAttribute('role') === 'searchbox') return true;
-    const type = (input.getAttribute('type') || 'text').toLowerCase();
-    if (type === 'search') return true;
+    if (typeOf(input) === 'search') return true;
     return SEARCH_INPUT_NAMES.has((input.getAttribute('name') || '').toLowerCase());
   }
 
@@ -207,9 +186,8 @@
 
     const valueTypes = new Set(['text', 'email', 'url', 'tel', 'password', 'number', '',
       'date', 'datetime-local', 'month', 'time', 'week']);
-    const inputs = queryAllDeep('input');
-    for (const input of inputs) {
-      const type = (input.getAttribute('type') || 'text').toLowerCase();
+    for (const input of queryAllDeep('input')) {
+      const type = typeOf(input);
       if (input.readOnly || input.disabled || isSearchInput(input) || (type !== 'file' && isFoldedAway(input))) {
         continue;
       }
@@ -223,8 +201,7 @@
     }
 
     // Check textareas (including in Shadow DOM)
-    const textareas = queryAllDeep('textarea');
-    for (const ta of textareas) {
+    for (const ta of queryAllDeep('textarea')) {
       if (ta.readOnly || ta.disabled || isFoldedAway(ta)) continue;
       if (ta.value !== ta.defaultValue) {
         return { isDirty: true, reason: 'Unsaved textarea content detected' };
@@ -234,8 +211,7 @@
     // Check rich-text editors, contenteditables, and modern web app editors.
     // Same list the telemetry counts, so an editor that marks the tab a tool can
     // never be one the zero-loss guard has not heard of.
-    const editables = [...queryAllDeep(TEXT_EDITOR_SELECTOR), ...designModeBody()];
-    for (const el of editables) {
+    for (const el of [...queryAllDeep(TEXT_EDITOR_SELECTOR), ...designModeBody()]) {
       if (el.innerText && el.innerText.trim().length > 5) {
         return { isDirty: true, reason: 'Unsaved rich-text editor draft detected' };
       }
@@ -247,8 +223,7 @@
     }
 
     // Check playing audio or video
-    const mediaElements = queryAllDeep('video, audio');
-    for (const media of mediaElements) {
+    for (const media of queryAllDeep('video, audio')) {
       if (!media.paused && !media.ended && media.currentTime > 0) {
         return { isDirty: true, reason: 'Active media playback detected' };
       }
@@ -263,26 +238,19 @@
   // just never auto-closed; see the isDirty/reason fields on the result)
   function getMetaContent(selector) {
     const el = document.querySelector(selector);
-    return el ? (el.getAttribute('content') || el.innerText || '').trim() : '';
+    return el ? (el.getAttribute('content') || '').trim() : '';
   }
 
   const ogTitle = getMetaContent('meta[property="og:title"]') || getMetaContent('meta[name="twitter:title"]');
   const ogDesc = getMetaContent('meta[property="og:description"]') || getMetaContent('meta[name="description"]') || getMetaContent('meta[name="twitter:description"]');
-  const ogImage = getMetaContent('meta[property="og:image"]') || getMetaContent('meta[name="twitter:image"]');
-  const ogSite = getMetaContent('meta[property="og:site_name"]');
-  const author = getMetaContent('meta[name="author"]') || getMetaContent('meta[property="article:author"]');
 
   // Favicon extraction
   let favIconUrl = '';
-  const iconLink = document.querySelector('link[rel~="icon"], link[rel="apple-touch-icon"]');
-  if (iconLink && iconLink.href) {
-    favIconUrl = iconLink.href;
-  } else {
-    try {
-      favIconUrl = `${window.location.origin}/favicon.ico`;
-    } catch {
-      favIconUrl = '';
-    }
+  try {
+    favIconUrl = document.querySelector('link[rel~="icon"], link[rel="apple-touch-icon"]')?.href
+      || `${window.location.origin}/favicon.ico`;
+  } catch {
+    favIconUrl = '';
   }
 
   // Page Title
@@ -441,8 +409,7 @@
   // every ad frame on the page is pure cost, so don't.
   const isTopFrame = window.top === window.self;
   const cleanText = isTopFrame ? extractCleanText() : '';
-  const words = cleanText.trim().split(/\s+/).filter(Boolean);
-  const wordCount = words.length;
+  const wordCount = cleanText.trim().split(/\s+/).filter(Boolean).length;
   const readingTimeMinutes = Math.max(1, Math.ceil(wordCount / 200));
 
   // Low-confidence check: if text is under 150 words, preserve as quick bookmark without bad summary
@@ -453,19 +420,17 @@
   //    lives in src/shared/closure-policy.js where a Node test can reach it.
   function collectClosureTelemetry() {
     const TOGGLE_TYPES = new Set(['checkbox', 'radio']);
-    const typeOf = (i) => (i.getAttribute('type') || 'text').toLowerCase();
     const candidateInputs = queryAllDeep('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"])')
       .filter(i => !isSearchInput(i) && isVisibleControl(i))
       // A toggle outside a submittable form is site chrome, not user state.
       .filter(i => !TOGGLE_TYPES.has(typeOf(i)) || isInMeaningfulForm(i));
     const otherInputs = candidateInputs.filter(i => typeOf(i) !== 'email');
-    const passwordInputs = otherInputs.filter(i => typeOf(i) === 'password');
     return {
       inputCounts: {
         textareas: queryAllDeep('textarea').filter(isVisibleControl).length,
         selects: queryAllDeep('select').filter(s => isVisibleControl(s) && isInMeaningfulForm(s)).length,
-        passwords: passwordInputs.length,
-        appContainers: [...queryAllDeep(EDITOR_SURFACE_SELECTOR), ...designModeBody()]
+        passwords: otherInputs.filter(i => typeOf(i) === 'password').length,
+        appContainers: [...queryAllDeep(`${TEXT_EDITOR_SELECTOR}, ${APP_SURFACE_SELECTOR}`), ...designModeBody()]
           .filter(isVisibleControl).length,
         otherInputs: otherInputs.length
       },
@@ -506,10 +471,7 @@
     wordCount,
     readingTimeMinutes,
     meta: {
-      description: ogDesc,
-      image: ogImage,
-      siteName: ogSite,
-      author: author
+      description: ogDesc
     }
   };
 })();

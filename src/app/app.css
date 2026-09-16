@@ -173,14 +173,23 @@ button {
   padding: 5px 10px;
 }
 
-.filter-item-btn span:first-child {
+.filter-item-btn span:first-child,
+.closed-today-title,
+.closed-today-tldr,
+.card-domain,
+.compact .card-title {
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .nav-item:hover,
-.filter-item-btn:hover {
+.filter-item-btn:hover,
+.icon-btn:hover,
+.search-clear-btn:hover,
+.view-tab-btn:hover,
+.action-icon-btn:hover,
+.modal-close-btn:hover {
   background: var(--bg-surface-hover);
   color: var(--text-primary);
 }
@@ -239,7 +248,6 @@ button {
 
 /* Export dropdown (opens upward from the sidebar footer) */
 .export-dropdown {
-  position: relative;
   flex: 1;
 }
 
@@ -252,20 +260,33 @@ button {
   transform: rotate(180deg);
 }
 
+/* CSS anchor positioning (anchor-name/position-anchor/anchor()) needs Chrome 125+;
+   manifest.json's minimum_chrome_version enforces that floor. */
+#export-dropdown-btn {
+  anchor-name: --export-dropdown-anchor;
+}
+
 .export-dropdown-menu {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 0;
+  position-anchor: --export-dropdown-anchor;
+  position: fixed;
+  /* Override the UA's [popover] { inset: 0 } so only bottom/left (below) are constrained */
+  top: auto;
+  right: auto;
+  bottom: calc(anchor(top) + 8px);
+  left: anchor(left);
   width: min(280px, calc(var(--sidebar-width) - 24px));
   background: var(--bg-surface);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
   padding: 6px;
-  display: flex;
   flex-direction: column;
   gap: 2px;
-  z-index: 100;
+}
+
+/* An unconditional author `display` here would beat the UA's [popover]:not(:popover-open) { display: none } by cascade origin */
+.export-dropdown-menu:popover-open {
+  display: flex;
 }
 
 .export-option-btn {
@@ -363,11 +384,6 @@ button {
   align-items: center;
   justify-content: center;
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
-}
-
-.icon-btn:hover {
-  background: var(--bg-surface-hover);
-  color: var(--text-primary);
 }
 
 .primary-btn {
@@ -502,11 +518,6 @@ button {
   line-height: 1;
 }
 
-.search-clear-btn:hover {
-  color: var(--text-primary);
-  background: var(--bg-surface-hover);
-}
-
 .search-kbd-hint {
   font-family: inherit;
   font-size: 10px;
@@ -599,11 +610,6 @@ button {
   cursor: pointer;
 }
 
-.view-tab-btn:hover {
-  background: var(--bg-surface-hover);
-  color: var(--text-primary);
-}
-
 .view-tab-btn[aria-pressed="true"] {
   background: var(--accent-light);
   color: var(--accent-text);
@@ -666,13 +672,6 @@ button {
 .closed-today-info {
   flex: 1;
   min-width: 0;
-}
-
-.closed-today-title,
-.closed-today-tldr {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .closed-today-title {
@@ -771,9 +770,6 @@ button {
   font-size: 11px;
   font-weight: 600;
   color: var(--text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   max-width: 180px;
 }
 
@@ -939,11 +935,6 @@ button {
   transition: color 0.15s ease, background 0.15s ease;
 }
 
-.action-icon-btn:hover {
-  background: var(--bg-surface-hover);
-  color: var(--text-primary);
-}
-
 .delete-btn:hover {
   color: var(--danger);
 }
@@ -1020,9 +1011,6 @@ button:active:not(:disabled) {
   min-width: 0;
   font-size: 12px;
   font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .compact .card-time,
@@ -1215,11 +1203,6 @@ dialog.reader-dialog[open] {
   color: var(--text-muted);
   padding: 6px 8px;
   border-radius: var(--radius-sm);
-}
-
-.modal-close-btn:hover {
-  background: var(--bg-surface-hover);
-  color: var(--text-primary);
 }
 
 .modal-body {

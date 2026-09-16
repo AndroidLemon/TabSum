@@ -10,16 +10,11 @@ export function fadeChipHtml(tab, settings, sortBy) {
   return label ? `<span class="fade-chip">${label}</span>` : '';
 }
 
+const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 // String-based on purpose: the textContent->innerHTML trick does not escape quotes,
 // which matters because we interpolate page-controlled titles into attributes.
 export function escapeHtml(str) {
-  if (str === null || str === undefined) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+  return String(str ?? '').replace(/[&<>"']/g, c => HTML_ESCAPES[c]);
 }
 
 /**

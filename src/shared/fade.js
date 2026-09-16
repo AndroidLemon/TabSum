@@ -33,7 +33,7 @@ export function getExpiry(record, settings) {
  * where the whole point is seeing every one of them).
  */
 export function fadeChipLabel(record, settings, sortBy, now = Date.now()) {
-  const expiry = settings ? getExpiry(record, settings) : null;
+  const expiry = getExpiry(record, settings);
   if (expiry === null) return '';
   const daysLeft = (expiry - now) / DAY_MS;
   if (sortBy !== 'expiring-soon' && daysLeft > FADE_WARNING_DAYS) return '';

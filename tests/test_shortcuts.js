@@ -11,7 +11,7 @@ import assert from 'node:assert';
 import { chromium } from '@playwright/test';
 
 const PORT = 8892;
-import { buildTestExtension, extensionLaunchOptions } from './helpers/test-extension.js';
+import { buildTestExtension, extensionLaunchOptions, waitForServiceWorker } from './helpers/test-extension.js';
 
 const EXTENSION_PATH = buildTestExtension();
 const USER_DATA_DIR = path.resolve('./tests/.playwright_user_data_shortcuts');
@@ -58,10 +58,7 @@ async function runShortcutsTests() {
     context = await chromium.launchPersistentContext(USER_DATA_DIR,
       extensionLaunchOptions(EXTENSION_PATH, ['--no-first-run']));
 
-    let [background] = context.serviceWorkers();
-    if (!background) {
-      background = await context.waitForEvent('serviceworker', { timeout: 10000 });
-    }
+    const background = await waitForServiceWorker(context);
     const extensionId = background.url().split('/')[2];
     console.log(`✓ Extension loaded with ID: ${extensionId}\n`);
 

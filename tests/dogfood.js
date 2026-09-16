@@ -8,7 +8,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
-import { buildTestExtension, extensionLaunchOptions } from './helpers/test-extension.js';
+import { buildTestExtension, extensionLaunchOptions, extractTab, waitForServiceWorker } from './helpers/test-extension.js';
 
 const PORT = 8899;
 const EXTENSION_PATH = buildTestExtension();
@@ -121,10 +121,7 @@ async function runDogfood() {
     console.log('✓ Chromium launched with TabSum extension loaded');
 
     // Wait for Service Worker
-    let [background] = context.serviceWorkers();
-    if (!background) {
-      background = await context.waitForEvent('serviceworker', { timeout: 10000 });
-    }
+    const background = await waitForServiceWorker(context);
     const extensionId = background.url().split('/')[2];
     console.log(`✓ TabSum Extension ID: ${extensionId}`);
 
@@ -239,15 +236,7 @@ async function runDogfood() {
     console.log('✓ User typed unsaved draft into textarea');
 
     // Run extractor on draft page
-    const draftCheck = await background.evaluate(async () => {
-      const tabs = await chrome.tabs.query({});
-      const target = tabs.find(t => t.url.includes('/form-draft'));
-      const results = await chrome.scripting.executeScript({
-        target: { tabId: target.id },
-        files: ['src/content/in-tab-extractor.js']
-      });
-      return results?.[0]?.result;
-    });
+    const draftCheck = await extractTab(background, '/form-draft');
 
     console.log(`Safety Gate Result: isDirty = ${draftCheck.isDirty}, reason = "${draftCheck.reason}"`);
     if (!draftCheck.isDirty) {

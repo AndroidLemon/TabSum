@@ -8,6 +8,12 @@ model available. Reserve the largest model for planning, review, and genuinely h
 reasoning (tricky architecture, subtle concurrency/security bugs, ambiguous
 requirements). Research/exploration-only work is unaffected.
 
+## Documentation
+
+Comments and docs are reviewed by the `technical-writer` agent (`.claude/agents/`):
+accurate against the code, current, and signal rather than noise. Run it after a
+feature lands or before a release. It never changes code behaviour.
+
 ## Don't cut corners on completion
 
 - Never mark a task complete without pasting the actual command output that proves

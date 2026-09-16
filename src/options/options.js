@@ -19,23 +19,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 function populateForm(settings) {
   document.getElementById('timeout-select').value = String(settings.timeoutMinutes || 60);
   
-  if (settings.archiveMode === 'close') {
-    document.getElementById('mode-close').checked = true;
-  } else if (settings.archiveMode === 'discard') {
-    document.getElementById('mode-discard').checked = true;
-  } else {
-    const hybridRadio = document.getElementById('mode-hybrid');
-    if (hybridRadio) {
-      hybridRadio.checked = true;
-    } else {
-      document.getElementById('mode-discard').checked = true;
-    }
-  }
+  const mode = ['close', 'discard'].includes(settings.archiveMode) ? settings.archiveMode : 'hybrid';
+  document.getElementById(`mode-${mode}`).checked = true;
 
-  const ignorePinnedToggle = document.getElementById('ignore-pinned-toggle');
-  if (ignorePinnedToggle) {
-    ignorePinnedToggle.checked = settings.ignorePinnedTabs !== undefined ? Boolean(settings.ignorePinnedTabs) : true;
-  }
+  document.getElementById('ignore-pinned-toggle').checked = settings.ignorePinnedTabs !== undefined ? Boolean(settings.ignorePinnedTabs) : true;
 
   document.getElementById('ai-close-toggle').checked = settings.closeRequiresAiSummary !== false;
   document.getElementById('fade-unopened-input').value = settings.fadeUnopenedDays;
@@ -52,12 +39,10 @@ function populateForm(settings) {
 }
 
 function setupListeners() {
-  // Open Wiki
   document.getElementById('open-wiki-link-btn').addEventListener('click', () => {
     chrome.tabs.create({ url: chrome.runtime.getURL('src/app/index.html') });
   });
 
-  // Grant Permissions
   document.getElementById('grant-perm-btn').addEventListener('click', async () => {
     try {
       const granted = await chrome.permissions.request({ origins: ['<all_urls>'] });
@@ -70,14 +55,12 @@ function setupListeners() {
     }
   });
 
-  // Timeout select
   document.getElementById('timeout-select').addEventListener('change', async (e) => {
     currentSettings.timeoutMinutes = parseInt(e.target.value, 10);
     await saveSettings(currentSettings);
     showToast('Inactivity timeout updated');
   });
 
-  // Archive Mode
   document.querySelectorAll('input[name="archiveMode"]').forEach(radio => {
     radio.addEventListener('change', async (e) => {
       currentSettings.archiveMode = e.target.value;
@@ -86,17 +69,12 @@ function setupListeners() {
     });
   });
 
-  // Ignore Pinned Tabs
-  const ignorePinnedToggle = document.getElementById('ignore-pinned-toggle');
-  if (ignorePinnedToggle) {
-    ignorePinnedToggle.addEventListener('change', async (e) => {
-      currentSettings.ignorePinnedTabs = e.target.checked;
-      await saveSettings(currentSettings);
-      showToast('Pinned tab preference saved');
-    });
-  }
+  document.getElementById('ignore-pinned-toggle').addEventListener('change', async (e) => {
+    currentSettings.ignorePinnedTabs = e.target.checked;
+    await saveSettings(currentSettings);
+    showToast('Pinned tab preference saved');
+  });
 
-  // Close only with an AI summary
   document.getElementById('ai-close-toggle').addEventListener('change', async (e) => {
     currentSettings.closeRequiresAiSummary = e.target.checked;
     await saveSettings(currentSettings);
@@ -114,7 +92,6 @@ function setupListeners() {
     });
   }
 
-  // AI Provider
   document.getElementById('ai-provider-select').addEventListener('change', async (e) => {
     currentSettings.aiProvider = e.target.value;
     toggleApiKeyRow(e.target.value === 'gemini-api');
@@ -123,7 +100,6 @@ function setupListeners() {
     showToast('AI Provider updated');
   });
 
-  // Local / OpenAI-compatible server fields
   for (const [id, key] of [['openai-base-url', 'openaiBaseUrl'], ['openai-model', 'openaiModel'], ['openai-api-key', 'openaiApiKey']]) {
     document.getElementById(id).addEventListener('change', async (e) => {
       currentSettings[key] = e.target.value.trim();
@@ -134,14 +110,12 @@ function setupListeners() {
 
   document.getElementById('openai-test-btn').addEventListener('click', testLocalLlmConnection);
 
-  // API Key input
   document.getElementById('gemini-api-key').addEventListener('change', async (e) => {
     currentSettings.geminiApiKey = e.target.value.trim();
     await saveSettings(currentSettings);
     showToast('API key saved locally');
   });
 
-  // Add Domain
   document.getElementById('add-domain-btn').addEventListener('click', async () => {
     const input = document.getElementById('new-domain-input');
     const domain = input.value.trim().toLowerCase()
@@ -160,7 +134,6 @@ function setupListeners() {
     }
   });
 
-  // Export buttons
   document.getElementById('export-json-btn').addEventListener('click', async () => {
     const tabs = await getArchivedTabs({ limit: Infinity, includeText: true });
     const json = exportToJSON(tabs);
@@ -175,70 +148,53 @@ function setupListeners() {
     showToast('Exported Markdown');
   });
 
-  // Import / Restore from a JSON backup
   const importBtn = document.getElementById('import-json-btn');
   const importInput = document.getElementById('import-json-input');
-  if (importBtn && importInput) {
-    importBtn.addEventListener('click', () => importInput.click());
-    importInput.addEventListener('change', async (e) => {
-      const file = e.target.files && e.target.files[0];
-      importInput.value = '';
-      if (!file) return;
+  importBtn.addEventListener('click', () => importInput.click());
+  importInput.addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    importInput.value = '';
+    if (!file) return;
 
-      try {
-        const text = await file.text();
-        const data = JSON.parse(text);
-        if (!Array.isArray(data)) {
-          throw new Error('Backup file must contain a JSON array of notes');
-        }
-
-        let imported = 0;
-        for (const record of data) {
-          if (record && typeof record === 'object') {
-            await saveArchivedTab(record);
-            imported++;
-          }
-        }
-
-        await updateStorageMeter();
-        showToast(`Imported ${imported} notes`);
-      } catch (err) {
-        console.error('Import failed:', err);
-        showToast('Import failed: invalid JSON backup file');
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      if (!Array.isArray(data)) {
+        throw new Error('Backup file must contain a JSON array of notes');
       }
-    });
-  }
 
-  // Clear All History buttons
-  const handleClearHistory = async () => {
+      let imported = 0;
+      for (const record of data) {
+        if (record && typeof record === 'object') {
+          await saveArchivedTab(record);
+          imported++;
+        }
+      }
+
+      await updateStorageMeter();
+      showToast(`Imported ${imported} notes`);
+    } catch (err) {
+      console.error('Import failed:', err);
+      showToast('Import failed: invalid JSON backup file');
+    }
+  });
+
+  document.getElementById('clear-history-btn').addEventListener('click', async () => {
     if (confirm('Are you sure you want to delete all stored tab summaries and wiki notes? This action cannot be undone.')) {
       await clearAllHistory();
       await updateStorageMeter();
       showToast('All history cleared');
     }
-  };
-
-  const clearHistoryBtn = document.getElementById('clear-history-btn');
-  if (clearHistoryBtn) {
-    clearHistoryBtn.addEventListener('click', handleClearHistory);
-  }
-
-  const clearDataBtn = document.getElementById('clear-data-btn');
-  if (clearDataBtn) {
-    clearDataBtn.addEventListener('click', handleClearHistory);
-  }
+  });
 }
 
 async function updateStorageMeter() {
   try {
     const estimate = await getStorageEstimate();
-    const meterEl = document.getElementById('storage-meter-text');
-    if (meterEl) {
-      const count = estimate.itemCount || 0;
-      const bytes = estimate.byteEstimate || 0;
-      const kb = Math.round(bytes / 1024);
-      meterEl.textContent = `Current Storage: ${count} tabs (~${kb} KB)`;
-    }
+    const count = estimate.itemCount || 0;
+    const bytes = estimate.byteEstimate || 0;
+    const kb = Math.round(bytes / 1024);
+    document.getElementById('storage-meter-text').textContent = `Current Storage: ${count} tabs (~${kb} KB)`;
   } catch (err) {
     console.error('Failed to update storage meter:', err);
   }
@@ -251,14 +207,11 @@ async function checkPermissions() {
 
   try {
     const hasPermission = await chrome.permissions.contains({ origins: ['<all_urls>'] });
+    card.classList.toggle('granted', hasPermission);
     if (hasPermission) {
       statusEl.textContent = '✓ Extraction permissions are active across all websites.';
-      statusEl.style.color = '#10b981';
       grantBtn.textContent = 'Permission Active';
       grantBtn.disabled = true;
-      grantBtn.style.opacity = '0.6';
-      card.style.background = 'var(--bg-card)';
-      card.style.borderColor = 'var(--border-color)';
     } else {
       statusEl.textContent = '⚠ TabSum requires permission to read background tab content.';
       grantBtn.textContent = 'Enable on All Sites';
@@ -320,9 +273,7 @@ async function testLocalLlmConnection() {
 }
 
 function toggleApiKeyRow(show) {
-  const row = document.getElementById('api-key-row');
-  if (show) row.classList.remove('hidden');
-  else row.classList.add('hidden');
+  document.getElementById('api-key-row').classList.toggle('hidden', !show);
 }
 
 function renderDomainChips(domains) {
