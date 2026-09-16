@@ -22,6 +22,10 @@ must-suspend pages classified `safe_to_close` ("leaks"). The leak gate had no
 tolerance; the recall gate did, because 8 of the corpus's 50 URLs are
 bot-blocked headless and the reachable set shifts between runs.
 
+This ADR replaces the former CLOSURE_POLICY_PLAN.md (deleted on this branch;
+last version at git commit `2cf8805~1`), so ADR 0001's reference to that
+plan's closing table resolves to this ADR's outcome tables below.
+
 ## Decision
 
 Rewrite rule 1 from "does the page contain any control" to "does the page
