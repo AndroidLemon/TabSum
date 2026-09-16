@@ -25,11 +25,12 @@ Measured after Step 3 (`logs/baseline-step3.md`):
 | github.com/nodejs/node/pull/50000 | 107 / 388 | held, rule 4 |
 
 Leaks 0 of 15 measured. Close recall 85.7%, up from 80.0% after Step 2 and
-82.9% for the closure policy as shipped. (ADR 0003's outcome has Step 10 at
-88.6% as first measured, 85.7% after its review rounds 1-3, and 82.9% after
-round 4, when the metric started counting a close only if the page is also
-not dirty and pkg.go.dev's unsaved-textarea load stopped counting. The 82.9%
-is the baseline this branch started from, `logs/baseline-step1.md`.)
+82.9% for the closure policy as shipped. (CLOSURE_POLICY_PLAN.md's closing
+table has Step 10 at 88.6% as first measured, 85.7% after its review rounds
+1-3, and 82.9% after round 4, when the metric started counting a close only
+if the page is also not dirty and pkg.go.dev's unsaved-textarea load stopped
+counting. The 82.9% is the baseline this branch started from,
+`logs/baseline-step1.md`.)
 
 ## Decision
 
