@@ -18,7 +18,7 @@ import { buildTestExtension, extensionLaunchOptions, extractTab, waitForServiceW
 const EXTENSION_PATH = buildTestExtension();
 const USER_DATA_DIR = path.resolve('./tests/.playwright_user_data_hardening');
 
-// Word fixtures for the /hidden-prose route (Step 2 of EXTRACTION_PLAN.md).
+// Word fixtures for the /hidden-prose route (Step 2 of docs/EXTRACTION_PLAN.md).
 // Every paragraph gets its own unique word prefix so the test can assert a
 // hidden/off-screen/nav word never appears in cleanText without relying on
 // any particular boilerplate phrase.
@@ -38,7 +38,7 @@ const HIDDEN_DIV_PARAGRAPHS = [
 const OFFSCREEN_PARAGRAPH = makeWords('offscreen-', 15);
 const NAV_PARAGRAPH = makeWords('navword-', 6);
 
-// Fixtures for the /table-prose route (Step 3 of EXTRACTION_PLAN.md), modelled
+// Fixtures for the /table-prose route (Step 3 of docs/EXTRACTION_PLAN.md), modelled
 // on HN: short <td> titles (must be harvested despite being under 20 chars)
 // and <span class="commtext"> comments nested inside a <td> (must be counted
 // once, via the <td>, not a second time via the <span>). Titles are kept
@@ -760,7 +760,7 @@ async function runHardeningTests() {
       await casePage.close();
     }
 
-    // 4a-4b. EXTRACTION_PLAN.md Step 2: the live-DOM harvest must recover
+    // 4a-4b. docs/EXTRACTION_PLAN.md Step 2: the live-DOM harvest must recover
     // exactly the visible prose and none of the hidden/off-screen/nav prose
     // that a detached clone's innerText === textContent used to leak through.
     const hiddenProsePage = await context.newPage();
@@ -786,7 +786,7 @@ async function runHardeningTests() {
     console.log(`✓ /hidden-prose: wordCount === ${expectedWordCount} (visible only), no hidden/off-screen/nav words leaked into cleanText`);
     await hiddenProsePage.close();
 
-    // 4a-4c. EXTRACTION_PLAN.md Step 3: widened block selector must harvest
+    // 4a-4c. docs/EXTRACTION_PLAN.md Step 3: widened block selector must harvest
     // <td> titles under the old 20-char floor and count a <p> nested two plain
     // <div>s deep exactly once, not once per wrapping <div>.
     const tableProsePage = await context.newPage();

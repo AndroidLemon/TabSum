@@ -1,351 +1,213 @@
-# TabSum 📑✨
+# TabSum
 
-> **Turn neglected browser tabs into an organized personal knowledge wiki—without losing your open loops.**
+**Close the tabs you were never going to read, and keep what was in them.**
 
 ![Manifest V3](https://img.shields.io/badge/Chrome-Manifest_V3-4285F4?logo=googlechrome&logoColor=white)
-![Privacy](https://img.shields.io/badge/Privacy-100%25_Local_First-10B981)
-![AI Engine](https://img.shields.io/badge/AI-Gemini_Nano_%2F_Local_LLM_%2F_Gemini_Flash_%2F_Heuristics-6366F1)
-![Storage](https://img.shields.io/badge/Storage-IndexedDB_%2B_Fading-F59E0B)
-![Tests](https://img.shields.io/badge/Tests-Playwright_%26_Unit_Passing-10B981)
+![Local first](https://img.shields.io/badge/Storage-Local_first-10B981)
 ![License](https://img.shields.io/badge/License-MIT-gray)
 
----
+TabSum is a Chrome extension that watches your background tabs. When one has sat untouched for an hour, TabSum reads the article text, writes a short summary, saves it to a searchable local notebook, and then closes or suspends the tab. Anything it closes can be reopened with one click. Nothing leaves your machine unless you point it at a summarizer of your own.
 
-## 📖 Table of Contents
+## Why I built it
 
-- [The Problem: Tab Hoarding is Working Memory Overload](#-the-problem-tab-hoarding-is-working-memory-overload)
-- [The Solution: TabSum](#-the-solution-tabsum)
-- [🚀 Key Features](#-key-features)
-  - [⚡ Tiered Hybrid Adaptive Archival](#-tiered-hybrid-adaptive-archival)
-  - [🛡️ Deep Safety Checks Before Archival](#️-deep-safety-checks-before-archival)
-  - [🧠 Multi-Tier Summarization Pipeline](#-multi-tier-summarization-pipeline)
-  - [📚 Personal Knowledge Wiki & Side Panel](#-personal-knowledge-wiki--side-panel)
-  - [📤 Obsidian, Markdown & JSON Export](#-obsidian-markdown--json-export)
-  - [⌨️ Global Keyboard Shortcuts & In-Panel Navigation](#️-global-keyboard-shortcuts--in-panel-navigation)
-  - [🔄 Smart In-Place Tab Reactivation](#-smart-in-place-tab-reactivation)
-- [🛠️ Architecture & Codebase Map](#️-architecture--codebase-map)
-- [📦 Installation & Setup](#-installation--setup)
-- [⚙️ Configuration & Archival Modes](#️-configuration--archival-modes)
-- [⌨️ Keyboard Shortcuts Reference](#️-keyboard-shortcuts-reference)
-- [🧪 Automated Testing & Dogfooding](#-automated-testing--dogfooding)
-- [🔒 Privacy & Security Principles](#-privacy--security-principles)
-- [📄 License](#-license)
+Tab hoarding is a working-memory problem. Every open tab is a thought you have not finished with, so closing it feels like losing it, and the bar fills up with favicon slivers. Tab suspenders like The Great Suspender and Chrome's memory saver free the RAM but leave the clutter, and neither leaves any record of what you had open.
 
----
+The bet behind TabSum is that most of those tabs are worth a paragraph, not a slot in your tab strip. If the extension can reliably capture the gist, closing the tab stops being a loss. Most of the engineering effort went into making that "reliably" true: knowing when a page is safe to touch, and getting clean text out of it.
 
-## 🤯 The Problem: Tab Hoarding is Working Memory Overload
+## How it works
 
-We open dozens or hundreds of tabs intending to read them later, but our browser tab bar quickly degrades into an unmanageable cognitive burden.
+1. **Wait for real inactivity.** A tab becomes eligible after the configured threshold (default 60 minutes). Time you spend idle, locked, or asleep does not count.
+2. **Check the tab is safe to touch.** Dirty forms, rich text editors, playing audio, and pinned tabs are left alone. Details below.
+3. **Extract the article.** An in-tab extractor walks the DOM with CSS-selector heuristics and strips navigation, headers, footers, sidebars, ads, and cookie banners. Output is clean text, metadata, and a reading-time estimate.
+4. **Summarize.** A one-sentence TL;DR, three to five bullet takeaways, and topic tags. Written by Chrome's on-device model, a local OpenAI-compatible server, or Gemini with your key. Falls back to an offline heuristic when no AI tier is available.
+5. **Archive.** In the default Smart Hybrid mode, plain reading pages are closed and interactive pages are suspended. Suspended tabs that stay untouched are closed at twice the threshold. A tab is only closed when an AI tier wrote the summary, so closing never loses the gist.
+6. **File it.** Every capture goes into a local IndexedDB notebook with full-text search and one-click restore. It opens as a Chrome side panel or as a full page in a tab.
 
-Closing a tab feels like discarding a thought or abandoning an idea, so we hoard them. Traditional tab suspenders (like *The Great Suspender* or Chrome's native memory saver) freeze tabs in place, leaving dozens of tiny, unreadable favicon slivers that clutter your workspace, increase visual distraction, and offer no searchable record of what you accumulated.
+Closed tabs collect in a **Closed today** list at the top of the notebook. There are no per-tab notifications.
 
----
+## Features
 
-## 💡 The Solution: TabSum
+### Archival modes
 
-**TabSum** is an intelligent, privacy-first Manifest V3 Chrome extension that continuously monitors inactive background tabs. When tabs remain untouched past your configured threshold, TabSum:
+Smart Hybrid is the default. Two other modes are available under Options:
 
-1. **Conducts Deep Safety Checks**: Scans for active inputs, rich text editors (ProseMirror, Quill, Monaco, CodeMirror), audio/video playback, and pinned status before touching anything.
-2. **Distills Core Knowledge**: Extracts clean article text, metadata, and reading time using an in-tab CSS-selector heuristic extractor that strips common boilerplate (navigation, headers/footers, sidebars, ads, cookie banners).
-3. **Generates Multi-Tier Summaries**: Synthesizes a 1-sentence **TL;DR**, 3–5 **bullet takeaways**, and **topic tags** using Chrome's on-device model, a local OpenAI-compatible server, or a Gemini key, falling back to fast offline heuristics for the summary. Tags are only added when an AI tier wrote the summary.
-4. **Executes Tiered Adaptive Archival**: Closes plain reading pages and suspends interactive ones (freeing their memory while keeping them in the tab strip, marked `💤`), then closes long-suspended tabs later — but it only closes a tab when an AI-written summary exists, so closing never loses the gist. Everything closed today is listed under **Closed today** for one-click reopening.
-5. **Organizes Your Personal Wiki**: Indexes every tab into a searchable, local IndexedDB knowledge base with **1-click restore**, available as a compact view in the Chrome Side Panel or as a full-page, Notion-style view in a tab (the same page, adapting to its width).
+- **Smart Hybrid.** At the threshold, closes plain reading pages (no forms, editors, dialogs, or stateful URLs like checkouts) and suspends everything else with `chrome.tabs.discard()`. A suspended tab keeps its place in the tab strip with a `💤` prefix on its title and its memory freed. At twice the threshold, suspended tabs you still have not touched are closed. Their summary was saved when they were suspended.
+- **Soft Suspend All.** Never closes. Suspends idle tabs to free memory.
+- **Auto-Close All.** Closes every idle tab unless it has unsaved input.
 
----
+**Only Close Tabs With an AI Summary** is on by default. With only the offline heuristic summary available, the tab is suspended instead of closed.
 
-## 🚀 Key Features
+### Safety checks
 
-### ⚡ Tiered Hybrid Adaptive Archival
+No heuristic is infallible, but before touching a tab TabSum checks for:
 
-In the default **Smart Hybrid** mode, TabSum acts in two steps. Time you spend away from the computer (idle, locked, or asleep) doesn't count toward either threshold.
+- **Unsaved input.** Standard `<input>`, `<textarea>`, and `<select>` elements, including inside nested Shadow DOM trees.
+- **Rich text editors.** `[role="textbox"]`, `[contenteditable]`, ProseMirror (Google Docs, Notion-style editors), Quill, Draft.js, Monaco (VS Code Web), CodeMirror, and Ace.
+- **Media.** Tabs that are audible (video calls, podcasts, music) are always spared.
+- **Pinned tabs.** Never touched by default.
+- **Whitelisted domains.** A listed domain covers its subdomains, so `google.com` covers `docs.google.com`. Defaults include Gmail, Google Docs, Drive, and Calendar, GitHub, GitLab, Slack, Teams, YouTube, Spotify, and Netflix.
+- **Trusted sites.** The mirror of the whitelist: domains that are closed once summarized even when the safety checks would only suspend them. Set either list from Options or by right-clicking a tab.
+- **Last-moment re-check.** After summarizing, TabSum confirms you have not switched to the tab or started audio in it before saving or closing anything.
 
-- **At the inactivity threshold (e.g. 60 min)**: TabSum summarizes the tab, then:
-  - **Closes** plain reading pages (no forms, editors, dialogs, or stateful URLs like checkouts).
-  - **Suspends** everything else with `chrome.tabs.discard()`, freeing its memory while keeping it in your tab strip with a `💤 ` prefix on its title.
-- **At twice the threshold**: tabs TabSum suspended that you still haven't touched are closed; their summary was already saved when they were suspended.
-- **Closing requires an AI-written summary** (Chrome's on-device model, a local OpenAI-compatible server, or your Gemini key). With only the offline heuristic summary available, the tab is suspended instead. Toggle this under **Only Close Tabs With an AI Summary**.
-- **No per-tab desktop notifications**: closed tabs collect in a **Closed today** list at the top of the Knowledge Hub, where you can review and reopen them on your own schedule.
+The archive record is fully written before a tab is closed or suspended, so an interrupted service worker cannot lose it. If Chrome refuses to close or suspend a tab, the note is kept as `📑 Saved` with the reason recorded.
 
-*(Options also offers **Soft Suspend All** — never close — and **Auto-Close All**.)*
+### Summarization tiers
 
-### 🛡️ Deep Safety Checks Before Archival
+Pick one under **AI Provider** in Options.
 
-TabSum runs a battery of pre-archival checks intended to avoid touching tabs you're still using. No automated heuristic is infallible, but coverage includes:
+| Tier | Engine | Where it runs | Notes |
+| :--- | :--- | :--- | :--- |
+| 0 | Heuristics | Offline | Lead-sentence extraction. No dependencies, no tags. |
+| 1 | Chrome Prompt API | On device | Gemini Nano built into Chrome (`LanguageModel`), used only when already downloaded. This is what **Auto** uses. |
+| 2 | Gemini Flash | Cloud, your key | Key stored locally in `chrome.storage.local`. |
+| 3 | Local / OpenAI-compatible server | Your server | Any `/v1/chat/completions` endpoint: Ollama, LM Studio, oMLX, llama.cpp, vLLM. Set URL, model, and optional key in Options. **Test Connection** grants access and lists models. Responses stream, with a 2-minute cap. Ollama may need `OLLAMA_ORIGINS=chrome-extension://*`. |
 
-- **Deep Form & Rich Text Inspection**: Scans standard `<input>`, `<textarea>`, and `<select>` elements, traverses **nested Shadow DOM** trees, and detects modern web editors:
-  - `[role="textbox"]`, `[contenteditable="true"]`
-  - **ProseMirror** (Google Docs, Notion-like editors)
-  - **Quill**, **Draft.js**, **Monaco Editor** (VS Code Web), and **CodeMirror**
-- **Media Playback Lock**: Tabs actively playing sound, video conferences, or podcasts (`audible: true`) are unconditionally spared.
-- **Pinned Tab Lock**: Pinned tabs are strictly preserved by default (`ignorePinnedTabs: true`).
-- **Domain Whitelist**: A listed domain also covers its subdomains (`google.com` covers `docs.google.com`); defaults include Gmail, Google Docs/Drive/Calendar, GitHub, GitLab, Slack, Teams, YouTube, Spotify, and Netflix.
-- **Crash Resilience**: The archive record is fully written before a tab is closed or suspended, so an interrupted service worker can't lose it. If Chrome refuses to close or suspend a tab, the note is kept as `📑 Saved` with the reason recorded.
-- **Last-Moment Re-Check**: After summarizing, TabSum re-checks that you haven't switched to the tab or started audio in it before saving or closing anything.
+If the chosen tier is unavailable, errors, or times out (20 seconds for cloud and on-device, 2 minutes for local servers), the summary falls back to Tier 0, and the tab is suspended rather than closed.
 
-### 🧠 Multi-Tier Summarization Pipeline
+### The notebook
 
-TabSum provides four summarization tiers; pick one under **AI Provider** in Options:
+The side panel and the full view are one page (`src/app/`), so every feature works in both. At side-panel width it is a single column of cards with a **Filters** drawer. In a wide tab it is a persistent sidebar and a multi-column grid. The side panel adds **Archive Current Tab** and **Open full view**, and closes itself when you open the full view.
 
-| Tier | Engine | Speed | Privacy | Requirements |
-| :--- | :--- | :---: | :---: | :--- |
-| **Tier 0** | **Algorithmic Heuristics** | Instant | 100% Offline | None (zero dependencies; lead-sentence extraction; no tags) |
-| **Tier 1** | **Chrome Prompt API** | Device-dependent | 100% On-Device | Gemini Nano built into Chrome (`LanguageModel`), used only when already downloaded. This is what **Auto** uses. |
-| **Tier 2** | **Google Gemini Flash** | Network-dependent | Cloud, your key | Gemini API key stored locally in `chrome.storage.local` |
-| **Tier 3** | **Local / OpenAI-compatible server** | Hardware-dependent | Your server | Any `/v1/chat/completions` endpoint (Ollama, LM Studio, oMLX, llama.cpp, vLLM). Set URL, model and optional key in Options; **Test Connection** grants access and lists models. Responses are streamed, with a 2-minute cap. Ollama may need `OLLAMA_ORIGINS=chrome-extension://*`. |
+- **Search** covers titles, URLs, summaries, tags, and the saved page text, with matches highlighted on the cards.
+- **Inbox, Reopened, and fading.** The side panel opens on the Inbox: captures you have not dealt with. Reopening a tab moves its note to Reopened, still searchable. Unstarred notes delete themselves 30 days after capture if never reopened, or 7 days after the last reopen. Both are configurable, and 0 means never. Notes close to fading show a `Fades in Nd` chip. Star a note to keep it forever. Capturing the same page again puts it back in the Inbox with a fresh clock.
+- **Undo.** Deleting a card shows a toast with a 5-second Undo button. Deleted notes are purged an hour later.
+- **Sorting.** Newest, oldest, quick reads first, deep dives first, title, domain, and expiring soon.
+- **Filters.** By tag, domain, favorites, or time (today, yesterday, past 7 days). Clicking a tag on a card filters by it.
+- **Status badges.** `💤 Sleeping` (discarded, still in the tab strip), `↩ Reopened`, `📑 Saved` (summary saved while the tab stays open), `🗄️ Archived` (closed and preserved).
+- **Reader view.** The saved page text in a `<dialog>` with reading typography. Escape or a click outside closes it.
+- **Density.** Comfortable cards or a compact list. The choice is remembered.
+- **In-place restore.** Restoring a note first checks whether that URL is already open in any window, and switches to it rather than opening a duplicate.
 
-*If the chosen AI tier is unavailable, errors, or times out (20 s for cloud/on-device, 2 min for local servers), the summary falls back to Tier 0 — and a tab with only a Tier 0 summary is suspended rather than closed.*
+### Export
 
-### 📚 Personal Knowledge Wiki & Side Panel
+- **Obsidian.** A `.zip` with one `.md` note per tab. YAML frontmatter (`title`, `url`, `captured_at`, `reading_time_minutes`, `tags`) that Obsidian reads as properties and tags.
+- **Markdown.** GitHub-flavored, for Notion, Logseq, or a plain repository.
+- **JSON.** Every record, with summaries and extracted text. Re-import it from Options with **Import JSON**.
 
-The side panel and the full view are one page (`src/app/`), so every feature below works in both. At side-panel widths it shows a single column of cards with a **Filters** drawer (views, timeline, favorites, tags, domains, export, settings); in a wide tab it shows a persistent sidebar and a multi-column card grid. The side panel additionally offers **Archive Current Tab** and **Open full view**.
+### Keyboard
 
-- **Full-Text Search with Highlighting**: Searches titles, URLs, summaries, tags, and the saved page text, highlighting matches on the cards. Includes a `✕` clear button and a `/` shortcut hint.
-- **Comfortable / Compact Density**: Toggle between detailed cards and a denser list; the choice is remembered.
-- **Progressive Disclosure**: At narrow widths, cards stay clean with 1-sentence TL;DRs while 3–5 bullet takeaways expand via a disclosure toggle (`▸ Key Takeaways (3)`); wide layouts show takeaways inline.
-- **Forgiving Undo**: Deleting a card saves the deletion immediately and shows a toast with a 5-second **Undo** button and countdown bar. Deleted notes are permanently purged an hour later.
-- **Inbox, Reopened & Fading**: The Side Panel opens on your **Inbox**: captures you haven't dealt with (the full view opens on all summaries; the Inbox / Reopened / All switch is always one click away). Reopening a tab (from TabSum, or by returning to a suspended tab) moves its note to **Reopened**, still searchable. Unstarred notes fade (are deleted) automatically: 30 days after capture if never reopened, 7 days after the last reopen otherwise (both configurable; 0 = never). Notes close to fading show a `Fades in Nd` chip; star a note to keep it forever. Capturing the same page again puts it back in the Inbox with a fresh clock.
-- **One-Click Full View**: Open the full-page view in a tab with 1 click; the side panel automatically closes to keep your screen distraction-free.
-- **Multi-Attribute Sorting**:
-  - 🕒 **Newest Added** (Default)
-  - ⏳ **Oldest Added**
-  - ⚡ **Quick Reads** ($\le 3$ minutes reading time)
-  - 📖 **Deep Dives** (Long-form articles)
-  - 🔤 **Title (A–Z)**
-  - 🌐 **Domain / Source (A–Z)**
-  - ⌛ **Expiring Soon** (notes closest to fading first)
-- **Status Badges**: Visual indicators distinguish tab states at a glance:
-  - `💤 Sleeping` (Tab discarded from RAM, still open in browser)
-  - `↩ Reopened` (Tab was restored and is active again)
-  - `📑 Saved` (Summary saved while the tab stays open: a manual archive, or Chrome refused to close/suspend it)
-  - `🗄️ Archived` (Tab closed and preserved in Knowledge Wiki)
-- **Reader View**: Opens the saved page text in a `<dialog>` with comfortable reading typography; Escape or a click outside closes it.
-- **Favorites (`⭐`)**: Star a card to keep it forever (it never fades) and find it under **Favorites**.
-- **Tags, Domains & Timeline**: Filter by AI-generated tags, top domains, or time (*Today*, *Yesterday*, *Past 7 Days*); clicking a tag on a card filters by it too.
+| Shortcut | Action |
+| :--- | :--- |
+| `Cmd+Shift+S` / `Ctrl+Shift+S` | Open the side panel |
+| `Cmd+Shift+E` / `Ctrl+Shift+E` | Summarize and save the active tab now. The tab stays open. |
+| `j` / `↓`, `k` / `↑` | Next / previous card |
+| `Enter` | Reopen the selected tab |
+| `/` | Focus search |
+| `Escape` | Clear search, or close the reader view |
 
-### 📤 Obsidian, Markdown & JSON Export
+## Install
 
-Export your accumulated knowledge into your favorite external PKM (Personal Knowledge Management) tool:
+TabSum is not on the Chrome Web Store yet. Load it unpacked:
 
-- **Obsidian Vault Format**: Downloads a `.zip` archive containing one `.md` note per tab, each with YAML frontmatter (`title`, `url`, `captured_at`, `reading_time_minutes`, `tags`) that Obsidian reads as properties and tags.
-- **Standard Markdown**: Clean GitHub-flavored markdown export ideal for Notion, Logseq, or personal repositories.
-- **JSON Backup & Import**: Export all IndexedDB records, metadata, summaries, and extracted text to a JSON file, and re-import that file later from the Options page (`Import JSON`) to restore it.
-
-### ⌨️ Global Keyboard Shortcuts & In-Panel Navigation
-
-- **Global Hotkeys**:
-  - `Command+Shift+S` (Mac) / `Ctrl+Shift+S` (Win/Linux): Open the Side Panel (Knowledge Hub).
-  - `Command+Shift+E` (Mac) / `Ctrl+Shift+E` (Win/Linux): Summarize the active tab and save it to the wiki now (the tab stays open).
-- **Keyboard Navigation (side panel & full view)**:
-  - `j` or `↓`: Select next knowledge card.
-  - `k` or `↑`: Select previous knowledge card.
-  - `Enter`: Restore and reopen the selected tab.
-  - `/`: Focus search input.
-  - `Escape`: Clear search / close the reader view.
-
-### 🔄 Smart In-Place Tab Reactivation
-
-Restoring a tab from the Side Panel or the full view checks whether that URL is already open in any window. If the tab still exists (active or sleeping), TabSum **switches directly to it in-place** rather than creating redundant, duplicate tabs.
-
----
-
-## 🛠️ Architecture & Codebase Map
-
-```
-TabSum/
-├── manifest.json                  # Manifest V3 manifest, permissions & global shortcuts
-├── package.json                   # Project scripts and Playwright test runner dependencies
-├── CHROMEWEBSTORE.md              # Chrome Web Store listing metadata & privacy disclosures
-├── LICENSE                        # MIT
-├── DOGFOOD_REPORT.md              # Generated by `npm run test:dogfood` — not tracked in git
-├── dist/                          # Generated by `npm run package` — not tracked in git
-├── src/
-│   ├── assets/
-│   │   └── icons/                 # 16px, 48px, 128px extension icon assets
-│   ├── background/
-│   │   └── service-worker.js      # Inactivity tracking (idle/sleep aware), sweeps, hybrid close/suspend engine, fading
-│   ├── content/
-│   │   └── in-tab-extractor.js    # In-tab CSS-selector extraction heuristic, shadow DOM / dirty form guards, & title badge
-│   ├── ai/
-│   │   └── summarizer.js          # Heuristic (Tier 0), Chrome Prompt API (Tier 1), Gemini BYOK (Tier 2), local OpenAI-compatible (Tier 3)
-│   ├── storage/
-│   │   └── db.js                  # IndexedDB interface (tombstoned soft-deletes, separate text store), multi-attribute sorting, fading, & settings
-│   ├── shared/
-│   │   ├── html.js                # Shared escapeHtml/highlightSearch/faviconUrl/fade-chip helpers for the app & options pages
-│   │   ├── export.js              # Shared Markdown, Obsidian .zip, and JSON export/import helpers
-│   │   ├── closure-policy.js      # Pure decision engine: sweep triage, per-tab safety tiers, close-vs-suspend, frame merging
-│   │   ├── fade.js                # Pure rule for when an unstarred note deletes itself
-│   │   └── with-timeout.js        # Generic promise-timeout helper
-│   ├── app/
-│   │   ├── index.html             # Knowledge Hub: one page for the Chrome Side Panel and the full view in a tab
-│   │   ├── app.js                 # Controller: search, filters, sort, cards, delete/undo, reader view, export, keyboard nav
-│   │   └── app.css                # Width-driven layout (narrow: drawer + single column; wide: sidebar + grid), dark/light themes
-│   └── options/
-│       ├── index.html             # Options page with archival modes, fading, storage meter, & domain rules
-│       ├── options.js             # Options controller with live storage telemetry
-│       └── options.css            # Settings page layout
-└── tests/
-    ├── test_core.js               # Unit test runner (domain extraction, heuristics, settings defaults)
-    ├── test_export.js             # Unit tests for Markdown, Obsidian frontmatter, & JSON export
-    ├── test_storage.js            # Unit tests for the IndexedDB layer (soft deletes, dedupe, fading, closed-today)
-    ├── test_sorting.js            # Unit tests for multi-attribute sorting (newest, reading time, A-Z)
-    ├── test_closure_policy.js     # Unit tests for the closure policy engine (safety gates, tier classifier, AI-summary gate)
-    ├── test_app_unit.js           # Unit & markup tests for the app page: reader typography, status badges, search highlight
-    ├── test_app_ux.js             # Playwright tests for both layouts & surfaces: drawer, grid, filters, density, undo, reader, export
-    ├── test_hybrid_mode.js        # Playwright tests for dual-tier adaptive archival & status chips
-    ├── test_tab_hardening.js      # Playwright tests for URL dedupe, rich-editor/form safety guards, 💤 marker, & in-place restore
-    ├── test_shortcuts.js          # Playwright tests for global and in-panel keyboard shortcuts
-    ├── test_local_llm.js          # Unit tests for the OpenAI-compatible tier (streaming, <think> blocks, fallback)
-    ├── test_wikipedia.js          # Multi-tab end-to-end Wikipedia extraction and restore stress test
-    ├── telemetry_ratio.js         # `npm run test:ratio` — live-network close/suspend ratio measurement against fixtures/corpus.txt
-    ├── dogfood.js                 # Complete browser self-test and automated dogfooding suite
-    ├── fixtures/
-    │   └── corpus.txt             # Labeled URL corpus (`expect: close` / `expect: suspend`) for telemetry_ratio.js
-    ├── measure/                   # One-off measurement scripts backing specific FOLLOWUPS/ADR findings, not part of the test suite
-    └── helpers/
-        └── test-extension.js      # Builds a temp copy of the extension with test-only host permissions for Playwright
+```bash
+git clone https://github.com/AndroidLemon/TabSum.git
 ```
 
----
+1. Open `chrome://extensions/` and turn on **Developer mode**.
+2. Click **Load unpacked** and select the `TabSum` directory.
+3. Click the TabSum icon (or press `Cmd+Shift+S`) to open the side panel, then click **Enable** on the permission banner so TabSum can read article text. You can also do this later from Options.
+4. Optional: under **Options → AI Provider**, pick a summarizer. Chrome's on-device model is used automatically if it is downloaded.
 
-## 📦 Installation & Setup
-
-### 1. Load into Google Chrome
-
-1. Clone or download this repository:
-   ```bash
-   git clone https://github.com/AndroidLemon/TabSum.git
-   cd TabSum
-   ```
-2. Open Chrome and visit:
-   ```
-   chrome://extensions/
-   ```
-3. In the top-right corner, turn on **Developer mode**.
-4. Click **Load unpacked** (top-left) and select the `TabSum` directory.
-
-### 2. First-Run Onboarding
-
-1. Click the **TabSum** icon in your Chrome toolbar (or press `Command+Shift+S` / `Ctrl+Shift+S`) to open the **Side Panel**.
-2. Click **Enable** on the permission banner to let TabSum read article text from your tabs (or do it later from Options).
-3. Optional: in **Options → AI Provider**, choose your summarizer (Chrome's on-device model is used automatically if downloaded; otherwise configure a local server or a Gemini key).
-4. You are ready to go!
-
-### 3. Package for the Chrome Web Store
-
-The repository root doubles as the unpacked extension, so it contains tests and docs that shouldn't ship. Build an upload-ready zip containing only `manifest.json`, `src/` and `LICENSE`:
+To build an upload-ready zip containing only `manifest.json`, `src/`, and `LICENSE`:
 
 ```bash
 npm run package   # → dist/tabsum-<version>.zip
 ```
 
----
+## Settings
 
-## ⚙️ Configuration & Archival Modes
+Right-click the extension icon and choose **Options**, or click **Settings** in the notebook.
 
-Navigate to the TabSum settings by right-clicking the extension icon and selecting **Options** (or clicking **Settings** in the Knowledge Hub sidebar / Filters drawer):
-
-| Setting | Default | Description |
-| :--- | :---: | :--- |
-| **Archival Action** | `Smart Hybrid` | **Smart Hybrid**: closes plain reading pages and suspends interactive ones at the threshold; closes suspended tabs at 2× the threshold.<br>**Soft Suspend All**: never closes; suspends idle tabs to free memory while keeping them in the tab strip.<br>**Auto-Close All**: closes every idle tab (unless it has unsaved input); reopen from **Closed today**. |
-| **Only Close Tabs With an AI Summary** | `Enabled` | Tabs are only closed when an AI tier wrote the summary; otherwise they are suspended. |
-| **Inactivity Threshold** | `60 minutes` | Inactive time before a background tab is eligible (15m, 30m, 1h, 2h, 4h, 24h). Time away from the computer doesn't count. |
-| **Ignore Pinned Tabs** | `Enabled` | Pinned tabs are never suspended or closed. |
-| **Domain Whitelist** | *Default list* | Specific domains and subdomains where TabSum will never touch tabs (`docs.google.com`, `github.com`, etc.). Trusted Sites is the mirror: domains closed once summarized even when the safety checks would only suspend them, in Smart Hybrid mode. Set either list here or via right-click on a tab. |
-| **Notes Fade After** | `30 / 7 days` | Unstarred notes are deleted this many days after capture (never reopened) / after the last reopen. 0 = never. |
-| **AI Provider** | `Auto` | **Auto** uses Chrome's on-device model when it's downloaded, else offline heuristics. Or pick Gemini (cloud, your key) or a local OpenAI-compatible server (URL + model + optional key). |
-
----
-
-## ⌨️ Keyboard Shortcuts Reference
-
-### Global Browser Shortcuts
-
-| Shortcut (Mac) | Shortcut (Windows / Linux) | Action |
+| Setting | Default | What it does |
 | :--- | :--- | :--- |
-| `Command + Shift + S` | `Ctrl + Shift + S` | Open the TabSum Side Panel |
-| `Command + Shift + E` | `Ctrl + Shift + E` | Summarize & save the active tab now (it stays open) |
+| Archival Action | Smart Hybrid | Smart Hybrid, Soft Suspend All, or Auto-Close All. See above. |
+| Only Close Tabs With an AI Summary | On | Otherwise the tab is suspended. |
+| Inactivity Threshold | 60 min | 15m, 30m, 1h, 2h, 4h, or 24h. Time away from the computer does not count. |
+| Ignore Pinned Tabs | On | Pinned tabs are never suspended or closed. |
+| Domain Whitelist / Trusted Sites | Default list | Never touch, or always close once summarized. Subdomains included. |
+| Notes Fade After | 30 / 7 days | Days after capture (never reopened) / after the last reopen. 0 = never. |
+| AI Provider | Auto | On-device model when downloaded, else heuristics. Or Gemini, or a local server. |
 
-### Knowledge Hub Shortcuts (Side Panel & Full View)
+## Privacy
 
-| Key | Action |
-| :---: | :--- |
-| `j` or `↓` | Highlight next tab card |
-| `k` or `↑` | Highlight previous tab card |
-| `Enter` | Reopen / restore highlighted tab in browser |
-| `/` | Jump focus to search input |
-| `Escape` | Clear search / dismiss reader view |
+The full policy is in [PRIVACY.md](PRIVACY.md). The short version:
 
----
+- All summaries, text, metadata, and tags live in your browser's IndexedDB (`TabSumDB`).
+- No analytics, no trackers, no external logging.
+- Page access is an optional permission you grant with a click, not at install. A local server's address is granted the same way, via **Test Connection**.
+- Favicons come from Chrome's own local favicon cache, never from a page-supplied URL or a third-party service.
+- URLs are validated to `http:` and `https:` before use, which blocks `javascript:` injection.
+- API keys stay in this browser's `chrome.storage.local`. Not synced, and sent only to the provider they belong to. Like all extension storage, unencrypted on disk.
+- With the default Auto provider, TabSum makes no network requests at all. Page text leaves the browser only for the summarizer you choose.
 
-## 🧪 Automated Testing & Dogfooding
+## Design decisions
 
-TabSum includes a suite of unit and end-to-end integration tests powered by Node.js and Playwright:
+The hard part of this project was not the UI. It was deciding when a page is safe to close and getting usable text out of arbitrary sites. The reasoning is written down:
 
-### Run Unit Tests (Instant, No Browser)
+- [`docs/decisions/`](docs/decisions/) holds the architecture decision records. They are immutable. A changed mind gets a new record that supersedes the old one.
+- [`docs/EXTRACTION_PLAN.md`](docs/EXTRACTION_PLAN.md) is the scoped plan for the text extractor, with the measurements that motivated each step.
+- [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md) lists everything deferred on purpose, with the trigger that would make it worth doing.
+- [`logs/`](logs/) holds the measurement baselines and adversarial review transcripts the decisions cite.
+- [`docs/CHROMEWEBSTORE.md`](docs/CHROMEWEBSTORE.md) is the draft store listing and privacy disclosure.
 
-Verifies domain extraction, heuristic summarization, the local-LLM tier (against a mocked server), Markdown/Obsidian export format, the storage layer (soft deletes, dedupe, fading), the closure policy (every safety gate, the tier classifier, the AI-summary gate) and multi-attribute sorting:
+## Codebase
 
-```bash
-npm run test:unit     # every node-only suite; opens no window
-npm test              # same as test:unit
-npm run test:policy   # just the closure policy
-npm run test:storage  # just the storage layer
+```
+manifest.json                  Manifest V3: permissions, global shortcuts
+src/
+  background/service-worker.js Inactivity tracking (idle/sleep aware), sweeps, close/suspend engine, fading
+  content/in-tab-extractor.js  Article extraction, shadow DOM and dirty-form guards, title badge
+  ai/summarizer.js             Tiers 0-3
+  storage/db.js                IndexedDB: tombstoned soft deletes, separate text store, sorting, fading, settings
+  shared/closure-policy.js     Pure decision engine: sweep triage, safety tiers, close vs suspend
+  shared/fade.js               Pure rule for when an unstarred note deletes itself
+  shared/export.js             Markdown, Obsidian zip, JSON export and import
+  shared/html.js               escapeHtml, highlightSearch, faviconUrl, fade chip
+  shared/with-timeout.js       Promise timeout helper
+  app/                         The notebook: one page for side panel and full view
+  options/                     Options page
+tests/
+  test_core.js                 Unit runner: domain extraction, heuristics, settings defaults
+  test_closure_policy.js       Every safety gate, the tier classifier, the AI-summary gate
+  test_storage.js              Soft deletes, dedupe, fading, closed-today
+  test_sorting.js              Multi-attribute sorting
+  test_export.js               Markdown, Obsidian frontmatter, JSON
+  test_local_llm.js            OpenAI-compatible tier against a mocked server: streaming, <think> blocks, fallback
+  test_app_unit.js             Markup tests for the notebook page
+  test_app_ux.js               Playwright: both layouts, filters, density, undo, reader, export
+  test_hybrid_mode.js          Playwright: close vs suspend, status chips
+  test_tab_hardening.js        Playwright: dedupe, editor and form guards, 💤 marker, in-place restore
+  test_shortcuts.js            Playwright: global and in-panel shortcuts
+  test_wikipedia.js            Playwright: multi-tab extraction and restore against live Wikipedia
+  dogfood.js                   End-to-end self-test; writes logs/dogfood-report.md
+  telemetry_ratio.js           Close/suspend ratio against tests/fixtures/corpus.txt; writes logs/closure-ratio-<date>.md
+  helpers/test-extension.js    Builds a temp copy of the extension with test-only host permissions
+  measure/                     One-off measurement scripts behind specific ADR findings
 ```
 
-### Run Specialized Playwright Test Suites
+## Tests
 
 ```bash
-# Test the Knowledge Hub in both layouts (side panel & full view): filters, inbox, fading, undo, reader, export
-npm run test:ux
+npm test               # every node-only suite, no browser
+npm run test:policy    # closure policy only
+npm run test:storage   # storage layer only
+npm run test:ratio     # close/suspend ratio against the labeled corpus, live network
 
-# Test tiered hybrid archival (soft-suspend vs closure) & status badges
-npm run test:hybrid
-
-# Test form-safety guards (Shadow DOM, ProseMirror, Quill), dedupe & in-place restore
-npm run test:hardening
-
-# Test global commands & Knowledge Hub keyboard navigation
+npm run test:ux        # notebook, both layouts
+npm run test:hybrid    # close vs suspend
+npm run test:hardening # form and editor guards, dedupe, restore
 npm run test:shortcuts
+npm run test:wiki      # live Wikipedia
+npm run test:dogfood   # end-to-end self-test
 
-# Run real-world multi-tab stress test on live Wikipedia articles
-npm run test:wiki
-
-# Run complete end-to-end browser dogfooding suite
-npm run test:dogfood
-```
-
-### Run Everything Without a Visible Window
-
-By default the Playwright suites open a real Chrome window, which takes focus. `TABSUM_HEADLESS=1`
-runs them with no window at all:
-
-```bash
 npm run test:browser   # every Playwright suite, headless
-npm run test:all       # test:unit + test:browser
-TABSUM_HEADLESS=1 npm run test:hybrid   # or one suite at a time
+npm run test:all       # unit + browser
 ```
 
-Headless needs Playwright's `chromium` channel, because the default headless build is the
-headless *shell*, which cannot load extensions at all. `extensionLaunchOptions()` in
-`tests/helpers/test-extension.js` handles that. If a suite ever behaves differently headless,
-`TABSUM_OFFSCREEN=1` is the fallback: a real window, parked off-screen.
+The Playwright suites open a real Chrome window by default. `TABSUM_HEADLESS=1` runs them with no window. Headless needs Playwright's `chromium` channel, because the default headless shell cannot load extensions. `extensionLaunchOptions()` in `tests/helpers/test-extension.js` handles that. If a suite behaves differently headless, `TABSUM_OFFSCREEN=1` parks a real window off-screen instead.
 
-The Playwright suites load a temporary copy of the extension (see `tests/helpers/test-extension.js`) that adds `localhost` and Wikipedia host permissions, so the shipped manifest doesn't need them.
+The Playwright suites load a temporary copy of the extension that adds `localhost` and Wikipedia host permissions, so the shipped manifest does not need them.
 
----
+## License
 
-## 🔒 Privacy & Security Principles
-
-- **Local-First Storage**: All summaries, clean text, metadata, and tags reside within your browser's local IndexedDB (`TabSumDB`).
-- **No Telemetry**: TabSum does not include analytics trackers or external logging scripts.
-- **Trust-First Permission Model**: Page access is an optional permission you grant with a click during onboarding, not at install. A local server's address is granted the same way, via **Test Connection**.
-- **Local Favicons**: Favicons are loaded from Chrome's own local favicon cache (the `favicon` permission and `chrome-extension://.../_favicon` API) — never from a page-supplied URL or a third-party favicon service.
-- **Strict Protocol Validation**: `http:` / `https:` URL sanitization prevents `javascript:` protocol injection and XSS vulnerabilities.
-- **Local Key Storage**: Optional API keys (Gemini, local server) are kept only in this browser's `chrome.storage.local` — not synced, not sent anywhere except to the provider they belong to. Like other extension storage it's unencrypted on disk.
-- **Only Network Egress**: Page text leaves the browser only for the summarization provider *you* choose: Google's Gemini API (with your key), or the OpenAI-compatible server URL you configure (keep it on `localhost` for fully local summaries). With the default Auto provider, TabSum makes no network requests at all.
-
----
-
-## 📄 License
-
-This project is open source and available under the [MIT License](LICENSE).
+[MIT](LICENSE).

@@ -33,7 +33,7 @@ const argOf = (flag, fallback) => {
 };
 
 const CORPUS = path.resolve(argOf('--corpus', './tests/fixtures/corpus.txt'));
-// 0.80 against a measured 85.7% (30 of 35) after EXTRACTION_PLAN.md Step 3,
+// 0.80 against a measured 85.7% (30 of 35) after docs/EXTRACTION_PLAN.md Step 3,
 // holding the same two-pages-of-drift tolerance (ADR 0001). Before that, 0.77
 // against 82.9%: that threshold moved because the METRIC changed,
 // not because the policy got worse: recall now scores what actually ships
@@ -161,7 +161,7 @@ function report(results, floor) {
 
   // Extraction recall: extracted words vs. what the body actually holds.
   // 25% is a reporting aid to flag rows for attention, not a gate — see
-  // EXTRACTION_PLAN.md Step 1. Sorted ascending so the worst recovery leads.
+  // docs/EXTRACTION_PLAN.md Step 1. Sorted ascending so the worst recovery leads.
   const RECALL_FLOOR = 0.25;
   const recallRows = ok.slice().sort((a, b) => {
     const ra = a.recall === null ? Infinity : a.recall;
@@ -205,7 +205,7 @@ function report(results, floor) {
       ...missed.map((r) => `| ${r.url} | ${r.reason} | ${r.wordCount} |`), ''] : []),
     '## Extraction recall',
     '',
-    `25% is a reporting aid to flag rows below for attention, not a gate — see EXTRACTION_PLAN.md Step 1.`,
+    `25% is a reporting aid to flag rows below for attention, not a gate — see docs/EXTRACTION_PLAN.md Step 1.`,
     '',
     '| URL | Extracted words | Body words | Recall |',
     '| :--- | ---: | ---: | ---: |',
