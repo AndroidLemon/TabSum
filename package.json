@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "test": "node tests/test_core.js",
+    "test": "npm run test:unit",
     "test:dogfood": "node tests/dogfood.js",
     "test:hardening": "node tests/test_tab_hardening.js",
     "test:shortcuts": "node tests/test_shortcuts.js",

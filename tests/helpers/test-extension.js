@@ -73,3 +73,52 @@ export function extensionLaunchOptions(extensionPath, extraArgs = []) {
   }
   return headless ? { channel: 'chromium', headless: true, args } : { headless: false, args };
 }
+
+/**
+ * Waits for the extension's MV3 service worker to come up, returning it.
+ */
+export async function waitForServiceWorker(context, timeout = 10000) {
+  let [background] = context.serviceWorkers();
+  if (!background) {
+    background = await context.waitForEvent('serviceworker', { timeout });
+  }
+  return background;
+}
+
+/**
+ * Injects in-tab-extractor.js into the top frame only of the tab whose URL
+ * contains `urlSubstring`, and returns its raw result. For multi-frame
+ * extraction merged the way the background service worker does it, see
+ * extractTabAllFrames in tests/test_tab_hardening.js.
+ */
+export async function extractTab(background, urlSubstring) {
+  return background.evaluate(async (target) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find(t => t.url.includes(target));
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ['src/content/in-tab-extractor.js']
+    });
+    return results?.[0]?.result;
+  }, urlSubstring);
+}
+
+/**
+ * Parses a closure-ratio corpus file: one URL per line, blank lines and
+ * `#` comments ignored, each URL tagged with the raw 'close'/'suspend' value
+ * from the most recent `# expect: close|suspend` marker above it.
+ */
+export function readCorpus(file) {
+  const out = [];
+  let expect = null;
+  for (const raw of fs.readFileSync(file, 'utf8').split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    const marker = line.match(/^#\s*expect:\s*(close|suspend)\s*$/i);
+    if (marker) { expect = marker[1].toLowerCase(); continue; }
+    if (line.startsWith('#')) continue;
+    if (!expect) throw new Error(`${file}: URL before any "# expect:" marker: ${line}`);
+    out.push({ url: line, expect });
+  }
+  return out;
+}

@@ -14,7 +14,7 @@ Last updated 2026-09-15, after follow-ups round 1 (items 1, 2, 9, 14, 19, 20 don
    The front page now extracts at 99.9% recall and closes, but a summary of
    thirty story titles may be useless. Answer is a corpus label change
    (`expect: suspend` or a new `expect: skip`), not an extractor change.
-   From EXTRACTION_PLAN.md known unknowns and ADR 0001. Tiny.
+   Originally raised in EXTRACTION_PLAN.md and ADR 0001. Tiny.
    *Trigger:* dogfooding; look at the HN entry the first time it appears.
    Decision 2026-09-15: leave labelled `expect: close`; the first HN summary
    seen in dogfooding decides it.
@@ -26,9 +26,9 @@ Last updated 2026-09-15, after follow-ups round 1 (items 1, 2, 9, 14, 19, 20 don
    closed roots are invisible even for the unslotted-light-DOM rule
    (`shadowRoot === null`). Component-heavy reading pages could report near
    zero words and be held by rule 4, which is safe but wrong. Upgrade path is
-   recorded in the harvest comment: `Range.getClientRects()` per text node, or
-   a walker that descends open roots. Needs a corpus page that actually
-   exhibits it first. From reviews round 1 (Gemini) and round 4 (Copilot).
+   recorded in the harvest comment: `Range.getClientRects()` per text node, at
+   layout cost. Needs a corpus page that actually exhibits it first. From
+   reviews round 1 (Gemini) and round 4 (Copilot).
    Medium.
    *Trigger:* a reading page held by rule 4 whose text is inside web
    components.
@@ -46,14 +46,14 @@ Last updated 2026-09-15, after follow-ups round 1 (items 1, 2, 9, 14, 19, 20 don
    `TEXT_EDITOR_SELECTOR` names Monaco, CodeMirror, Ace, ProseMirror, Quill
    and Draft by class. Every editor that falls out of fashion, or renames its
    root class, becomes a silently closed tool. Upgrade path in the comment at
-   `in-tab-extractor.js:109`: score a tool by off-screen capture textarea plus
+   `in-tab-extractor.js:92`: score a tool by off-screen capture textarea plus
    tall scroll container instead of by class name. Medium.
    *Trigger:* a draft lost in an editor not on the list.
 
 7. **Consent banners as app surfaces.**
    `[role="dialog"]` counts as an app surface, and an undismissed cookie
    banner is visible by definition. Inert on the corpus today. Upgrade path at
-   `in-tab-extractor.js:130`: require the dialog to contain a control. Small.
+   `in-tab-extractor.js:113`: require the dialog to contain a control. Small.
    *Trigger:* close recall drops on banner-heavy publisher pages.
 
 8. **Right-parked prose.**
@@ -128,7 +128,7 @@ Last updated 2026-09-15, after follow-ups round 1 (items 1, 2, 9, 14, 19, 20 don
 16. **The reopen race cannot be closed.**
     `userReopened` shrinks the window between the dirty check and the
     destructive call to one `tabs.get` round trip. Noted at
-    `service-worker.js:386`. No work; here so nobody tries to "fix" it with a
+    `service-worker.js:377`. No work; here so nobody tries to "fix" it with a
     second check.
 
 ## Knowledge hub
@@ -155,4 +155,4 @@ Last updated 2026-09-15, after follow-ups round 1 (items 1, 2, 9, 14, 19, 20 don
 22. **No data migrations exist.**
     There are no users yet, so schema changes are made in place. Write the
     first migration when a schema change ships after launch. Noted at
-    `db.js:34`.
+    `db.js:25`.

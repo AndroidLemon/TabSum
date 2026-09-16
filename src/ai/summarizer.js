@@ -3,6 +3,7 @@
  * Tier 0: Algorithmic Heuristics (Instant, 0ms, 100% offline, zero-config)
  * Tier 1: Chrome Built-in Prompt API (Gemini Nano on-device, via LanguageModel)
  * Tier 2: Gemini Flash BYOK (Optional cloud API)
+ * Tier 3: OpenAI-compatible local LLM (Ollama, LM Studio, llama.cpp server, vLLM, ...)
  */
 
 import { withTimeout } from '../shared/with-timeout.js';
@@ -28,12 +29,13 @@ const SUMMARY_SCHEMA = {
 
 const SYSTEM_PROMPT =
   'You are an executive knowledge assistant. Given an article, respond with JSON: ' +
-  '{ "tldr": "1-2 sentence overview", "bullets": ["takeaway 1", "takeaway 2", "takeaway 3"], "tags": ["tag1", "tag2"] }';
+  '{ "tldr": "1-2 sentence overview", "bullets": ["takeaway 1", "takeaway 2", "takeaway 3"], "tags": ["tag1", "tag2"] }. ' +
+  'bullets should be an array of up to 5 distinct key takeaways, and tags should be an array of up to 4 topic tags.';
 
 /**
  * Main summarization dispatcher
- * @param {Object} extractedData { title, cleanText, meta, domain, wordCount, isLowConfidence }
- * @param {Object} settings { aiProvider, geminiApiKey }
+ * @param {Object} extractedData { title, cleanText, meta, domain, isLowConfidence }
+ * @param {Object} settings { aiProvider, geminiApiKey, openaiBaseUrl, openaiModel, openaiApiKey }
  * @returns {Promise<{ tldr: string, bullets: string[], tags: string[], source: 'gemini-api'|'openai-compatible'|'prompt-api'|'heuristic' }>}
  *   `source` says which tier wrote it; auto-close only trusts AI-written summaries.
  *   Only AI tiers produce tags; the heuristic tier returns `tags: []`.
@@ -55,27 +57,20 @@ export async function summarizeContent(extractedData, settings = {}) {
   }
 
   const provider = settings.aiProvider || 'auto';
-  const tiers = [];
 
-  if (provider === 'gemini-api' && settings.geminiApiKey) {
-    tiers.push({ source: 'gemini-api', run: () => summarizeWithGeminiAPI(extractedData, settings.geminiApiKey) });
-  }
-  if (provider === 'openai-compatible' && settings.openaiBaseUrl && settings.openaiModel) {
-    tiers.push({
-      source: 'openai-compatible',
-      timeoutMs: LOCAL_TIMEOUT_MS,
-      run: () => summarizeWithOpenAICompatible(extractedData, settings)
-    });
-  }
-  if (provider === 'auto' || provider === 'prompt-api') {
-    tiers.push({ source: 'prompt-api', run: () => summarizeWithChromePromptAPI(extractedData) });
-  }
+  const tier = provider === 'gemini-api' && settings.geminiApiKey
+    ? { source: 'gemini-api', run: () => summarizeWithGeminiAPI(extractedData, settings.geminiApiKey) }
+    : provider === 'openai-compatible' && settings.openaiBaseUrl && settings.openaiModel
+    ? { source: 'openai-compatible', timeoutMs: LOCAL_TIMEOUT_MS, run: () => summarizeWithOpenAICompatible(extractedData, settings) }
+    : provider === 'auto' || provider === 'prompt-api'
+    ? { source: 'prompt-api', run: () => summarizeWithChromePromptAPI(extractedData) }
+    : null;
 
-  for (const { source, run, timeoutMs = TIER_TIMEOUT_MS } of tiers) {
+  if (tier) {
     try {
-      const raw = await withTimeout(run(), timeoutMs, 'AI tier');
+      const raw = await withTimeout(tier.run(), tier.timeoutMs || TIER_TIMEOUT_MS, 'AI tier');
       const normalized = raw && normalizeSummary(raw);
-      if (normalized?.tldr) return { ...normalized, source };
+      if (normalized?.tldr) return { ...normalized, source: tier.source };
     } catch (err) {
       console.warn('AI tier failed, falling back:', err?.message || err);
     }
@@ -118,11 +113,10 @@ export function normalizeSummary(raw) {
 /**
  * Tier 0: Heuristic Extractive Summarizer
  */
-export function summarizeWithHeuristics({ title, cleanText, meta, domain }) {
+export function summarizeWithHeuristics({ title, cleanText, meta }) {
   const paragraphs = cleanText.split('\n\n').map(p => p.trim()).filter(Boolean);
   const sentences = [];
 
-  // Split into sentences
   for (const para of paragraphs) {
     const rawSentences = para.match(/[^.!?]+[.!?]+/g) || [para];
     for (const s of rawSentences) {
@@ -133,23 +127,18 @@ export function summarizeWithHeuristics({ title, cleanText, meta, domain }) {
     }
   }
 
-  // Score sentences
   const titleWords = (title || '').toLowerCase().split(/\s+/).filter(w => w.length > 3);
   const scored = sentences.map((sentence, index) => {
     let score = 0;
     const lower = sentence.toLowerCase();
 
     // Position score (earlier sentences in articles have higher information density)
-    if (index === 0) score += 4;
-    else if (index < 3) score += 2.5;
-    else if (index < 8) score += 1.5;
+    score += index === 0 ? 4 : index < 3 ? 2.5 : index < 8 ? 1.5 : 0;
 
-    // Title word overlap
     for (const tw of titleWords) {
       if (lower.includes(tw)) score += 2;
     }
 
-    // Key insight indicators
     if (/(in conclusion|importantly|crucially|demonstrates|reveals|results show|key takeaway|proves that|leads to)/i.test(sentence)) {
       score += 3;
     }
@@ -163,7 +152,6 @@ export function summarizeWithHeuristics({ title, cleanText, meta, domain }) {
     return { sentence, score, index };
   });
 
-  // Pick top sentences for bullets
   scored.sort((a, b) => b.score - a.score);
   const topSentences = scored.slice(0, 4)
     .sort((a, b) => a.index - b.index)
@@ -258,14 +246,7 @@ async function summarizeWithChromePromptAPI({ title, cleanText }) {
  */
 async function summarizeWithGeminiAPI({ title, cleanText }, apiKey) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
-  const prompt = `Summarize this web page into structured JSON with fields:
-  "tldr": 1-2 sentence core message
-  "bullets": array of up to 5 distinct key takeaways
-  "tags": array of up to 4 topic tags
-
-  Title: ${title}
-  Content:
-  ${excerpt(cleanText, 6000)}`;
+  const prompt = `${SYSTEM_PROMPT}\n\nTitle: ${title}\nContent:\n${excerpt(cleanText, 6000)}`;
 
   const res = await fetch(url, {
     method: 'POST',
@@ -381,7 +362,4 @@ function parseJsonObject(text) {
   return match ? JSON.parse(match[0]) : null;
 }
 
-function cleanUpSummaryText(text) {
-  if (!text) return '';
-  return text.trim().replace(/^["']|["']$/g, '');
-}
+const cleanUpSummaryText = (t) => (t || '').trim().replace(/^["']|["']$/g, '');

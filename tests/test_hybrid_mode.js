@@ -12,7 +12,7 @@ import { classifyClosureSafety } from '../src/shared/closure-policy.js';
 import { chromium } from '@playwright/test';
 
 const PORT = 8893;
-import { buildTestExtension, extensionLaunchOptions } from './helpers/test-extension.js';
+import { buildTestExtension, extensionLaunchOptions, waitForServiceWorker } from './helpers/test-extension.js';
 
 const EXTENSION_PATH = buildTestExtension();
 const USER_DATA_DIR = path.resolve('./tests/.playwright_user_data_hybrid');
@@ -159,6 +159,43 @@ function createMockServer() {
   return new Promise(resolve => server.listen(PORT, () => resolve(server)));
 }
 
+// Activates the options-page helper tab so every other tab in the suite is a
+// non-active background tab, the state the inactivity sweep requires.
+async function activateHelperTab(background) {
+  await background.evaluate(async () => {
+    const tabs = await chrome.tabs.query({});
+    const helper = tabs.find(t => t.url.includes('src/options/index.html'));
+    if (helper) await chrome.tabs.update(helper.id, { active: true });
+  });
+}
+
+// Sends TRIGGER_SWEEP_NOW and waits for the response, which arrives only
+// after performInactivitySweep returns.
+async function triggerSweep(page) {
+  return page.evaluate(() => new Promise(resolve => {
+    chrome.runtime.sendMessage({ type: 'TRIGGER_SWEEP_NOW' }, resolve);
+  }));
+}
+
+// Backdates chrome.storage.session's tabTimestamps for every tab whose URL
+// contains one of urlSubstrings, so the sweep treats it as stale. Returns a
+// map of urlSubstring -> tab id for callers that need the id back.
+async function backdateTabs(background, urlSubstrings, msAgo) {
+  return background.evaluate(async ({ subs, ms }) => {
+    const tabs = await chrome.tabs.query({});
+    const data = await chrome.storage.session.get('tabTimestamps');
+    const timestamps = data.tabTimestamps || {};
+    const staleTime = Date.now() - ms;
+    const ids = {};
+    for (const sub of subs) {
+      const tab = tabs.find(t => t.url.includes(sub));
+      if (tab) { timestamps[tab.id] = staleTime; ids[sub] = tab.id; }
+    }
+    await chrome.storage.session.set({ tabTimestamps: timestamps });
+    return ids;
+  }, { subs: urlSubstrings, ms: msAgo });
+}
+
 async function runHybridTests() {
   console.log('\n🧪 Starting TabSum Hybrid Adaptive Archival Mode Test Suite...\n');
 
@@ -172,18 +209,7 @@ async function runHybridTests() {
   const context = await chromium.launchPersistentContext(USER_DATA_DIR,
     extensionLaunchOptions(EXTENSION_PATH, ['--no-sandbox']));
 
-  let background;
-  for (const page of context.backgroundPages()) {
-    background = page;
-    break;
-  }
-  if (!background) {
-    background = await context.waitForEvent('backgroundpage', { timeout: 7000 }).catch(() => null);
-  }
-  if (!background) {
-    const sw = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker', { timeout: 7000 });
-    background = sw;
-  }
+  const background = await waitForServiceWorker(context, 7000);
 
   const extensionId = background.url().split('/')[2];
   console.log(`✓ Extension loaded with ID: ${extensionId}`);
@@ -321,32 +347,15 @@ async function runHybridTests() {
 
     // Focus helperPage so both test tabs are non-active background tabs
     // Ensure helperPage tab is active so pure and form tabs are inactive background tabs
-    await background.evaluate(async () => {
-      const tabs = await chrome.tabs.query({});
-      const helper = tabs.find(t => t.url.includes('src/options/index.html'));
-      if (helper) {
-        await chrome.tabs.update(helper.id, { active: true });
-      }
-      const pure = tabs.find(t => t.url.includes('/pure-article'));
-      const form = tabs.find(t => t.url.includes('/untouched-form'));
-      const staleTime = Date.now() - 120000; // 2 minutes ago
-      const data = await chrome.storage.session.get('tabTimestamps');
-      const timestamps = data.tabTimestamps || {};
-      if (pure) timestamps[pure.id] = staleTime;
-      if (form) timestamps[form.id] = staleTime;
-      await chrome.storage.session.set({ tabTimestamps: timestamps });
-    });
+    await activateHelperTab(background);
+    await backdateTabs(background, ['/pure-article', '/untouched-form'], 120000); // 2 minutes ago
 
     // Wait 500ms for active tab state to settle
     await new Promise(r => setTimeout(r, 500));
 
     // Trigger Inactivity Sweep from helperPage (not background)
     console.log('Triggering background inactivity sweep in hybrid mode...');
-    await helperPage.evaluate(async () => {
-      return new Promise(resolve => {
-        chrome.runtime.sendMessage({ type: 'TRIGGER_SWEEP_NOW' }, resolve);
-      });
-    });
+    await triggerSweep(helperPage);
 
     // Wait for sweep processing to settle
     await new Promise(r => setTimeout(r, 1200));
@@ -423,29 +432,15 @@ async function runHybridTests() {
     const pinnedTabId = await background.evaluate(async () => {
       const tabs = await chrome.tabs.query({});
       const pure = tabs.find(t => t.url.includes('/pure-article'));
-      if (pure) {
-        await chrome.tabs.update(pure.id, { pinned: true });
-        const data = await chrome.storage.session.get('tabTimestamps');
-        const timestamps = data.tabTimestamps || {};
-        timestamps[pure.id] = Date.now() - 120000;
-        await chrome.storage.session.set({ tabTimestamps: timestamps });
-        return pure.id;
-      }
-      return null;
+      if (pure) await chrome.tabs.update(pure.id, { pinned: true });
+      return pure?.id ?? null;
     });
+    await backdateTabs(background, ['/pure-article'], 120000);
 
-    await background.evaluate(async () => {
-      const tabs = await chrome.tabs.query({});
-      const helper = tabs.find(t => t.url.includes('src/options/index.html'));
-      if (helper) await chrome.tabs.update(helper.id, { active: true });
-    });
+    await activateHelperTab(background);
     await new Promise(r => setTimeout(r, 400));
 
-    await helperPage.evaluate(async () => {
-      return new Promise(resolve => {
-        chrome.runtime.sendMessage({ type: 'TRIGGER_SWEEP_NOW' }, resolve);
-      });
-    });
+    await triggerSweep(helperPage);
     await new Promise(r => setTimeout(r, 1000));
 
     const pinnedTabStatus = await background.evaluate(async (targetId) => {
@@ -478,31 +473,13 @@ async function runHybridTests() {
     await whitelistedPage.goto(`http://localhost:${PORT}/pure-article`);
     await whitelistedPage.waitForLoadState('networkidle');
 
-    const whitelistedTabId = await background.evaluate(async () => {
-      const tabs = await chrome.tabs.query({});
-      const pure = tabs.find(t => t.url.includes('/pure-article'));
-      if (pure) {
-        const data = await chrome.storage.session.get('tabTimestamps');
-        const timestamps = data.tabTimestamps || {};
-        timestamps[pure.id] = Date.now() - 120000;
-        await chrome.storage.session.set({ tabTimestamps: timestamps });
-        return pure.id;
-      }
-      return null;
-    });
+    const whitelistedIds = await backdateTabs(background, ['/pure-article'], 120000);
+    const whitelistedTabId = whitelistedIds['/pure-article'] ?? null;
 
-    await background.evaluate(async () => {
-      const tabs = await chrome.tabs.query({});
-      const helper = tabs.find(t => t.url.includes('src/options/index.html'));
-      if (helper) await chrome.tabs.update(helper.id, { active: true });
-    });
+    await activateHelperTab(background);
     await new Promise(r => setTimeout(r, 400));
 
-    await helperPage.evaluate(async () => {
-      return new Promise(resolve => {
-        chrome.runtime.sendMessage({ type: 'TRIGGER_SWEEP_NOW' }, resolve);
-      });
-    });
+    await triggerSweep(helperPage);
     await new Promise(r => setTimeout(r, 1000));
 
     const whitelistedTabStatus = await background.evaluate(async (targetId) => {
@@ -541,20 +518,10 @@ async function runHybridTests() {
     const gatedPage = await context.newPage();
     await gatedPage.goto(`http://localhost:${PORT}/pure-article`);
     await gatedPage.waitForLoadState('networkidle');
-    await background.evaluate(async () => {
-      const tabs = await chrome.tabs.query({});
-      const helper = tabs.find(t => t.url.includes('src/options/index.html'));
-      if (helper) await chrome.tabs.update(helper.id, { active: true });
-      const pure = tabs.find(t => t.url.includes('/pure-article'));
-      const data = await chrome.storage.session.get('tabTimestamps');
-      const timestamps = data.tabTimestamps || {};
-      if (pure) timestamps[pure.id] = Date.now() - 120000;
-      await chrome.storage.session.set({ tabTimestamps: timestamps });
-    });
+    await activateHelperTab(background);
+    await backdateTabs(background, ['/pure-article'], 120000);
     await new Promise(r => setTimeout(r, 400));
-    await helperPage.evaluate(() => new Promise(resolve => {
-      chrome.runtime.sendMessage({ type: 'TRIGGER_SWEEP_NOW' }, resolve);
-    }));
+    await triggerSweep(helperPage);
     await new Promise(r => setTimeout(r, 1000));
 
     const gated = await helperPage.evaluate(async () => {
@@ -584,17 +551,8 @@ async function runHybridTests() {
       const { saveSettings } = await import(chrome.runtime.getURL('src/storage/db.js'));
       await saveSettings({ closeRequiresAiSummary: false }); // the Test 6 record is heuristic-only
     });
-    await background.evaluate(async () => {
-      const tabs = await chrome.tabs.query({});
-      const pure = tabs.find(t => t.url.includes('/pure-article'));
-      const data = await chrome.storage.session.get('tabTimestamps');
-      const timestamps = data.tabTimestamps || {};
-      if (pure) timestamps[pure.id] = Date.now() - 180000; // 3 min > 2 x 1-min timeout
-      await chrome.storage.session.set({ tabTimestamps: timestamps });
-    });
-    await helperPage.evaluate(() => new Promise(resolve => {
-      chrome.runtime.sendMessage({ type: 'TRIGGER_SWEEP_NOW' }, resolve);
-    }));
+    await backdateTabs(background, ['/pure-article'], 180000); // 3 min > 2 x 1-min timeout
+    await triggerSweep(helperPage);
     await new Promise(r => setTimeout(r, 1000));
 
     const tier2 = await helperPage.evaluate(async (id) => {
@@ -617,17 +575,11 @@ async function runHybridTests() {
     await nextPage.goto(`http://localhost:${PORT}/article-with-search`);
     await nextPage.waitForLoadState('networkidle');
 
+    await activateHelperTab(background);
+    await backdateTabs(background, ['/pure-article', '/article-with-search'], 120000);
     const hungTabId = await background.evaluate(async () => {
       const tabs = await chrome.tabs.query({});
-      const helper = tabs.find(t => t.url.includes('src/options/index.html'));
-      if (helper) await chrome.tabs.update(helper.id, { active: true });
       const hung = tabs.find(t => t.url.includes('/pure-article'));
-      const next = tabs.find(t => t.url.includes('/article-with-search'));
-      const data = await chrome.storage.session.get('tabTimestamps');
-      const timestamps = data.tabTimestamps || {};
-      timestamps[hung.id] = Date.now() - 120000;
-      timestamps[next.id] = Date.now() - 120000;
-      await chrome.storage.session.set({ tabTimestamps: timestamps });
       // The FIRST injection into the hung tab never settles; every other call is real.
       globalThis.__realExecuteScript = chrome.scripting.executeScript.bind(chrome.scripting);
       let hungOnce = false;
@@ -642,9 +594,7 @@ async function runHybridTests() {
     // TRIGGER_SWEEP_NOW responds only after performInactivitySweep returns, so the round
     // trip is the sweep's duration: >= 10s proves the timeout fired.
     const sweepStarted = Date.now();
-    await helperPage.evaluate(() => new Promise(resolve => {
-      chrome.runtime.sendMessage({ type: 'TRIGGER_SWEEP_NOW' }, resolve);
-    }));
+    await triggerSweep(helperPage);
     assert.ok(Date.now() - sweepStarted >= 10000, 'The sweep must wait out EXTRACT_TIMEOUT_MS on the hung tab, not finish early');
 
     const afterHungSweep = await background.evaluate(async (id) => {
@@ -657,9 +607,7 @@ async function runHybridTests() {
 
     // isSweeping was released in finally: the next sweep runs, and the hung tab (timestamp
     // untouched by the error path) gets a real injection this time and closes.
-    await helperPage.evaluate(() => new Promise(resolve => {
-      chrome.runtime.sendMessage({ type: 'TRIGGER_SWEEP_NOW' }, resolve);
-    }));
+    await triggerSweep(helperPage);
     await new Promise(r => setTimeout(r, 1000));
     const hungStillOpen = await background.evaluate(async (id) => (await chrome.tabs.query({})).some(t => t.id === id), hungTabId);
     await background.evaluate(() => { chrome.scripting.executeScript = globalThis.__realExecuteScript; });

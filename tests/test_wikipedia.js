@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
 
-import { buildTestExtension, extensionLaunchOptions } from './helpers/test-extension.js';
+import { buildTestExtension, extensionLaunchOptions, waitForServiceWorker } from './helpers/test-extension.js';
 
 const EXTENSION_PATH = buildTestExtension();
 const USER_DATA_DIR = path.resolve('./tests/.playwright_user_data_wiki');
@@ -48,10 +48,7 @@ async function runWikipediaMultiTabTest() {
       extensionLaunchOptions(EXTENSION_PATH, ['--no-first-run', '--disable-blink-features=AutomationControlled']));
 
     // 1. Locate Extension Service Worker
-    let [background] = context.serviceWorkers();
-    if (!background) {
-      background = await context.waitForEvent('serviceworker', { timeout: 15000 });
-    }
+    const background = await waitForServiceWorker(context, 15000);
     const extensionId = background.url().split('/')[2];
     console.log(`✓ TabSum Extension ID: ${extensionId}`);
 

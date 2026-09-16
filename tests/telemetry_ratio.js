@@ -14,8 +14,9 @@
  *
  * ponytail: no extension is loaded. in-tab-extractor.js is a self-contained IIFE
  * with no chrome.* calls, so page.evaluate(eval) returns identical telemetry
- * (same trick as tests/test_hybrid_mode.js:198). bypassCSP mirrors the isolated
- * world the real executeScript injection gets, which page CSP does not govern.
+ * (same trick as tests/test_hybrid_mode.js's `extractorCode` eval). bypassCSP
+ * mirrors the isolated world the real executeScript injection gets, which page
+ * CSP does not govern.
  *
  * Usage: node tests/telemetry_ratio.js [--corpus path] [--floor 0.80]
  */
@@ -23,6 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
 import { classifyClosureSafety, mergeFrameExtractions } from '../src/shared/closure-policy.js';
+import { readCorpus } from './helpers/test-extension.js';
 
 const args = process.argv.slice(2);
 const argOf = (flag, fallback) => {
@@ -54,22 +56,10 @@ const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
 
 const EXTRACTOR = fs.readFileSync(path.resolve('./src/content/in-tab-extractor.js'), 'utf8');
 
-// `# expect: close` / `# expect: suspend` markers set a running label that
-// applies to every URL beneath them.
-function readCorpus(file) {
-  const out = [];
-  let expect = null;
-  for (const raw of fs.readFileSync(file, 'utf8').split('\n')) {
-    const line = raw.trim();
-    if (!line) continue;
-    const marker = line.match(/^#\s*expect:\s*(close|suspend)\s*$/i);
-    if (marker) { expect = marker[1].toLowerCase() === 'close' ? 'safe_to_close' : 'suspend_only'; continue; }
-    if (line.startsWith('#')) continue;
-    if (!expect) throw new Error(`${file}: URL before any "# expect:" marker: ${line}`);
-    out.push({ url: line, expect });
-  }
-  return out;
-}
+// `# expect: close` / `# expect: suspend` markers (parsed by the shared
+// readCorpus) set a running label that applies to every URL beneath them;
+// mapped here to the tier names classifyClosureSafety returns.
+const TIER_FOR_EXPECT = { close: 'safe_to_close', suspend: 'suspend_only' };
 
 async function measure(context, { url, expect }) {
   const page = await context.newPage();
@@ -105,15 +95,15 @@ async function measure(context, { url, expect }) {
     }
     if (!extracted?.success) return { url, expect, error: 'extractor returned no result' };
 
-    // Same bridge the service worker uses (service-worker.js:461): wordCount is a
-    // sibling of closureTelemetry, not inside it.
+    // Same bridge the service worker uses (service-worker.js's processTabArchival):
+    // wordCount is a sibling of closureTelemetry, not inside it.
     const safety = classifyClosureSafety({ ...extracted.closureTelemetry, wordCount: extracted.wordCount });
 
     // bodyWords: what the MAIN frame's body actually holds, independent of the
     // extractor's own block selection — the recall denominator. A separate
     // page.evaluate (not part of the extractor run above) using the same
-    // tokenising rule as wordCount (in-tab-extractor.js:303) so the two are
-    // comparable.
+    // tokenising rule as the `wordCount` computed right after
+    // extractCleanText() in in-tab-extractor.js, so the two are comparable.
     let bodyWords = null;
     try {
       bodyWords = await page.mainFrame().evaluate(() => {
@@ -256,7 +246,7 @@ function report(results, floor) {
 }
 
 (async () => {
-  const urls = readCorpus(CORPUS);
+  const urls = readCorpus(CORPUS).map(({ url, expect }) => ({ url, expect: TIER_FOR_EXPECT[expect] }));
   console.log(`Measuring ${urls.length} URLs (concurrency ${CONCURRENCY})...`);
 
   const browser = await chromium.launch({ headless: true });

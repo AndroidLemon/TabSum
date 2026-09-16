@@ -8,22 +8,24 @@
  * the caller pastes stdout into logs/measure-frames-discard-2026-09-14.md.
  *
  * Permission model: this script builds its OWN throwaway extension copy
- * (like tests/helpers/test-extension.js, but not using that helper, so the
- * shared test manifest is left alone) and grants host_permissions for only
- * the TOP-LEVEL origin of each corpus URL - one pattern per URL, computed
- * with the same originPatternFor() the extension itself uses. This is
- * "per-origin" mode: it simulates a user who has granted TabSum access to
- * the site they're reading, which is the realistic steady state (nobody
- * grants <all_urls> by default; optional_host_permissions in manifest.json
- * has to be requested). It deliberately does NOT grant permission for any
- * cross-origin child frame's own origin, because that's the gap under test.
+ * (like tests/helpers/test-extension.js, using that helper's
+ * extensionLaunchOptions/readCorpus/waitForServiceWorker, but with its own
+ * manifest so the shared test manifest is left alone) and grants
+ * host_permissions for only the TOP-LEVEL origin of each corpus URL - one
+ * pattern per URL, computed with the same originPatternFor() the extension
+ * itself uses. This is "per-origin" mode: it simulates a user who has
+ * granted TabSum access to the site they're reading, which is the
+ * realistic steady state (nobody grants <all_urls> by default;
+ * optional_host_permissions in manifest.json has to be requested). It
+ * deliberately does NOT grant permission for any cross-origin child
+ * frame's own origin, because that's the gap under test.
  */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
 import { originPatternFor, MIN_COUNTABLE_FRAME_AREA } from '../../src/shared/closure-policy.js';
-import { extensionLaunchOptions } from '../helpers/test-extension.js';
+import { extensionLaunchOptions, readCorpus, waitForServiceWorker } from '../helpers/test-extension.js';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
 const argCorpus = process.argv.slice(2).indexOf('--corpus');
@@ -32,21 +34,6 @@ const CORPUS = argCorpus === -1
   : path.resolve(process.argv[2 + argCorpus + 1]);
 const NAV_TIMEOUT_MS = 25000;
 const SETTLE_MS = 1500;
-
-function readCorpus(file) {
-  const out = [];
-  let expect = null;
-  for (const raw of fs.readFileSync(file, 'utf8').split('\n')) {
-    const line = raw.trim();
-    if (!line) continue;
-    const marker = line.match(/^#\s*expect:\s*(close|suspend)\s*$/i);
-    if (marker) { expect = marker[1].toLowerCase() === 'close' ? 'close' : 'suspend'; continue; }
-    if (line.startsWith('#')) continue;
-    if (!expect) continue;
-    out.push({ url: line, expect });
-  }
-  return out;
-}
 
 function copyDir(src, dest) {
   fs.mkdirSync(dest, { recursive: true });
@@ -188,8 +175,7 @@ async function measureOne(context, background, entry) {
   const context = await chromium.launchPersistentContext(userDataDir,
     extensionLaunchOptions(extensionPath, ['--no-first-run']));
   try {
-    let [background] = context.serviceWorkers();
-    if (!background) background = await context.waitForEvent('serviceworker', { timeout: 10000 });
+    const background = await waitForServiceWorker(context);
     console.log(`Extension loaded: ${background.url()}\n`);
 
     const results = [];

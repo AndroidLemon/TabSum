@@ -119,7 +119,7 @@ function currentFilters() {
 
 async function updateStats() {
   const stats = await getStats();
-  const set = (id, value) => { const el = $(id); if (el) el.textContent = value; };
+  const set = (id, value) => { $(id).textContent = value; };
   set('stat-total', stats.total);
   set('stat-today', stats.today);
   set('stat-time', `${stats.totalReadingMinutes}m`);
@@ -484,11 +484,7 @@ function closeDrawer() {
 }
 
 function toggleExportMenu(open) {
-  const menu = $('export-dropdown-menu');
-  const shouldOpen = open ?? menu.hidden;
-  menu.hidden = !shouldOpen;
-  $('export-dropdown-btn').setAttribute('aria-expanded', String(shouldOpen));
-  if (shouldOpen) menu.querySelector('.export-option-btn')?.focus();
+  $('export-dropdown-menu').togglePopover(open);
 }
 
 /**
@@ -759,31 +755,25 @@ function setupEventListeners() {
     }
   });
 
-  // Export dropdown
+  // Export dropdown (popover attribute + popovertarget handle opening, light-dismiss and Escape)
   const exportBtn = $('export-dropdown-btn');
   const exportMenu = $('export-dropdown-menu');
-  exportBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    toggleExportMenu();
-  });
   exportBtn.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
       toggleExportMenu(true);
     }
   });
-  document.addEventListener('click', (e) => {
-    if (!exportMenu.hidden && !exportMenu.contains(e.target)) toggleExportMenu(false);
+  exportMenu.addEventListener('beforetoggle', (e) => {
+    exportBtn.setAttribute('aria-expanded', String(e.newState === 'open'));
+  });
+  exportMenu.addEventListener('toggle', (e) => {
+    if (e.newState === 'open') exportMenu.querySelector('.export-option-btn')?.focus();
   });
   exportMenu.addEventListener('keydown', (e) => {
     const options = Array.from(exportMenu.querySelectorAll('.export-option-btn'));
     const i = options.indexOf(document.activeElement);
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      e.stopPropagation(); // don't also clear the search / close the drawer
-      toggleExportMenu(false);
-      exportBtn.focus();
-    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
       options[(i + (e.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length].focus();
     } else if (e.key === 'Tab') {
@@ -817,6 +807,7 @@ function setupEventListeners() {
     const drawerOpen = document.body.classList.contains('drawer-open');
 
     if (e.key === 'Escape') {
+      if (exportMenu.matches(':popover-open')) return; // the popover closes itself on Escape
       if (drawerOpen) return closeDrawer();
       searchInput.blur();
       clearSelection();
@@ -861,11 +852,13 @@ function toSafeStringArray(value) {
     .filter(Boolean);
 }
 
+const relativeTimeFormatter = new Intl.RelativeTimeFormat('en', { style: 'narrow' });
+
 function formatTimeAgo(timestamp) {
   const mins = Math.floor((Date.now() - timestamp) / 60000);
   if (mins < 1) return 'Just now';
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 60) return relativeTimeFormatter.format(-mins, 'minute');
   const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
+  if (hours < 24) return relativeTimeFormatter.format(-hours, 'hour');
+  return relativeTimeFormatter.format(-Math.floor(hours / 24), 'day');
 }

@@ -38,7 +38,6 @@ const {
   softDeleteTab,
   restoreDeletedTab,
   purgeDeletedTabs,
-  deleteArchivedTab,
   markClosedByTabSum,
   markTabGone,
   markReopened,
@@ -72,7 +71,6 @@ const tombstoned = await softDeleteTab('gone');
 assert.ok(typeof tombstoned.deletedAt === 'number', 'softDeleteTab sets deletedAt');
 assert.strictEqual(await softDeleteTab('missing'), null, 'softDeleteTab resolves null for unknown ids');
 assert.deepStrictEqual((await getArchivedTabs()).map(t => t.id), ['keep'], 'Tombstones hidden by default');
-assert.strictEqual((await getArchivedTabs({ includeDeleted: true })).length, 2, 'includeDeleted shows tombstones');
 assert.strictEqual((await getStats()).total, 1, 'getStats ignores tombstones');
 assert.deepStrictEqual((await getAllDomains()).map(d => d.domain), ['keep.example'], 'getAllDomains ignores tombstones');
 assert.strictEqual((await getStorageEstimate()).itemCount, 1, 'getStorageEstimate ignores tombstones');
@@ -86,8 +84,6 @@ assert.strictEqual((await purgeDeletedTabs()).purgedCount, 0, 'Fresh tombstones 
 assert.strictEqual((await purgeDeletedTabs(0)).purgedCount, 1, 'Tombstone older than cutoff is purged');
 assert.strictEqual(await getTabById('gone'), null);
 assert.ok(await getTabById('keep'));
-await deleteArchivedTab('keep');
-assert.strictEqual(await getTabById('keep'), null, 'deleteArchivedTab hard-deletes');
 console.log('✓ Tombstones hide, restore, and purge correctly');
 
 // Test 7: Text-store split

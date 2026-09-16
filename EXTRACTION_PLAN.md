@@ -66,6 +66,9 @@ text stops appearing in extracted output.
 
 ## Step 3 — Widen the block selector, with a containment rule
 
+*Superseded by ADR 0002: the containment/leaf-rule harvest described below was*
+*replaced by a text-node walk the next day, for the reasons ADR 0002 records.*
+
 Add `td, dd, dt` and `div`/`span` that contain text but **no** element child that
 would itself be harvested (a leaf-text rule). The leaf rule is what stops nested
 `<div>`s counting their children's text N times — `div[class]/span[class]` on the
@@ -96,24 +99,6 @@ three pages above without any must-suspend page moving.
 
 ---
 
-## Out of scope
-
-- The closure policy itself. If a page becomes closeable because extraction got
-  better, that is the intended outcome, not a policy change.
-- `petstore.swagger.io`, which is held by the word floor for a different reason
-  (its "Try it out" controls produce `appContainers=0`).
-
-## Known unknowns
-
-- **HN may not be worth summarising at all.** A link index is not an article, and
-  a wiki entry summarising "30 story titles" may be near-useless even when
-  extraction succeeds. Step 1's numbers should be read with that in mind — the
-  right answer for HN might be a corpus label change, not an extractor change.
-- The 25% recovery threshold in Step 1 is a guess, chosen to be obviously
-  exceeded by the three known-bad pages. It is a reporting aid, not a gate.
-
----
-
 ## Outcome (2026-09-14, branch extraction-v1)
 
 | | Close recall | Leaks | HN /news | torvalds/linux |
@@ -129,9 +114,11 @@ three pages above without any must-suspend page moving.
   had been closing on a collapsed commit list; its visible prose lives in
   timeline divs, which is Step 3's job.
 - **Step 3** brought HN and the repo landing page to 100% and 84% recall and
-  both now close. No page is over 100% any more. Known ceiling: a semantic
-  block that contains a nested block loses its own preamble text (nodejs.org
-  fs.html 92.7% -> 81.1%, still closes). lobste.rs fell to 35% because its
+  both now close. No page is over 100% any more. It also introduced a
+  preamble-loss bug (nodejs.org fs.html 92.7% -> 81.1%, still closes) recorded
+  here as a "known ceiling"; ADR 0002 found and fixed it the next day (fs.html
+  back to 91.6%) by replacing this containment-rule harvest outright, so
+  read that ceiling as fixed, not permanent. lobste.rs fell to 35% because its
   stories are short fragments under a floored li; it still closes.
 - **Step 4**: option 1, rule 4 stays on word count. See ADR 0001. Floor
   0.77 -> 0.80. The two pages still held (HN item?id=1 at 72 words, the PR at

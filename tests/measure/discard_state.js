@@ -18,9 +18,10 @@
  *   6. Read back the three values from the reactivated tab.
  * Repeated once with autocomplete="off" on the <form>.
  *
- * Known hazard (tests/test_hybrid_mode.js:297): a mocked-out comment there
- * says real chrome.tabs.discard() has caused a "SwiftShader compositor
- * segfault" in this project's test environment before. This script is
+ * Known hazard (tests/test_hybrid_mode.js, the "Mock chrome.tabs.discard in
+ * test environment" comment): it says real chrome.tabs.discard() has caused a
+ * "SwiftShader compositor segfault" in this project's test environment
+ * before. This script is
  * intentionally isolated in its own process (not sharing a run with
  * frame_gap.js) so a crash here doesn't cost the other measurement.
  */
@@ -28,7 +29,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
-import { buildTestExtension, extensionLaunchOptions } from '../helpers/test-extension.js';
+import { buildTestExtension, extensionLaunchOptions, waitForServiceWorker } from '../helpers/test-extension.js';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
 const PORT = 8899;
@@ -189,8 +190,7 @@ async function main() {
     // which sidesteps the SwiftShader compositor segfault on discard().
     if (process.env.TABSUM_CHANNEL) launchOpts.channel = process.env.TABSUM_CHANNEL;
     context = await chromium.launchPersistentContext(userDataDir, launchOpts);
-    let [background] = context.serviceWorkers();
-    if (!background) background = await context.waitForEvent('serviceworker', { timeout: 10000 });
+    const background = await waitForServiceWorker(context);
     console.log(`Extension loaded: ${background.url()}\n`);
 
     const results = [];

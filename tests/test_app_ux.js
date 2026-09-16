@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import assert from 'node:assert';
 import { chromium } from '@playwright/test';
 
-import { buildTestExtension, extensionLaunchOptions } from './helpers/test-extension.js';
+import { buildTestExtension, extensionLaunchOptions, waitForServiceWorker } from './helpers/test-extension.js';
 
 const EXTENSION_PATH = buildTestExtension();
 const USER_DATA_DIR = path.resolve('./tests/.playwright_user_data_ux');
@@ -30,10 +30,7 @@ async function runAppUXTests() {
     context = await chromium.launchPersistentContext(USER_DATA_DIR,
       extensionLaunchOptions(EXTENSION_PATH, ['--no-first-run']));
 
-    let [background] = context.serviceWorkers();
-    if (!background) {
-      background = await context.waitForEvent('serviceworker', { timeout: 10000 });
-    }
+    const background = await waitForServiceWorker(context);
     const extensionId = background.url().split('/')[2];
     const APP_URL = `chrome-extension://${extensionId}/src/app/index.html`;
     console.log(`✓ Extension loaded with ID: ${extensionId}\n`);
@@ -204,6 +201,24 @@ async function runAppUXTests() {
       assert.strictEqual(await page.locator(selector).isVisible(), true, `Drawer must contain ${selector}`);
     }
     assert.match(await page.textContent('#sidebar-tags [data-tag="web"] .badge'), /^2$/, 'Tag list shows counts');
+
+    // Export dropdown lives in the drawer too; same open / visible / Escape-closes check as the wide layout
+    const drawerExportMenu = page.locator('#export-dropdown-menu');
+    await page.click('#export-dropdown-btn');
+    assert.strictEqual(await drawerExportMenu.isVisible(), true, 'Export menu opens from the drawer');
+    assert.strictEqual(await drawerExportMenu.locator('.export-option-btn').count(), 3, 'Export offers Markdown, Obsidian and JSON');
+    const [drawerExportBtnBox, drawerExportMenuBox] = await Promise.all([
+      page.locator('#export-dropdown-btn').boundingBox(),
+      drawerExportMenu.boundingBox()
+    ]);
+    const overlapsOrAdjacent = drawerExportMenuBox.x < drawerExportBtnBox.x + drawerExportBtnBox.width + 24 &&
+      drawerExportMenuBox.x + drawerExportMenuBox.width > drawerExportBtnBox.x - 24 &&
+      drawerExportMenuBox.y < drawerExportBtnBox.y + drawerExportBtnBox.height + 24 &&
+      drawerExportMenuBox.y + drawerExportMenuBox.height > drawerExportBtnBox.y - 24;
+    assert.ok(overlapsOrAdjacent, `Export menu should render near its button, not at the viewport origin (btn=${JSON.stringify(drawerExportBtnBox)}, menu=${JSON.stringify(drawerExportMenuBox)})`);
+    await page.keyboard.press('Escape');
+    assert.strictEqual(await drawerExportMenu.isHidden(), true, 'Escape closes the export menu in the drawer');
+
     await page.keyboard.press('Escape');
     await page.locator('#sidebar').waitFor({ state: 'hidden' });
     console.log('✓ Drawer opens with views, time filters, favorites, tags, domains, export & settings; Escape closes it');
