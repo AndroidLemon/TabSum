@@ -493,6 +493,72 @@ async function runHybridTests() {
 
     await whitelistedPage.close();
 
+    // 4c: Trusted Domain Override - closes a tab the closure tier alone would only suspend,
+    // but a page with unsaved work is still kept regardless of trust. Also undoes 4b's
+    // whitelist entry: the whitelist would otherwise short-circuit the sweep in stage 1
+    // before a trusted-domain close is ever decided.
+    await helperPage.evaluate(async () => {
+      const { saveSettings, getSettings } = await import(chrome.runtime.getURL('src/storage/db.js'));
+      const curr = await getSettings();
+      await saveSettings({
+        excludedDomains: (curr.excludedDomains || []).filter(d => d !== 'localhost'),
+        alwaysCloseDomains: [...(curr.alwaysCloseDomains || []), 'localhost']
+      });
+    });
+
+    const trustedFormPage = await context.newPage();
+    await trustedFormPage.goto(`http://localhost:${PORT}/untouched-form`);
+    await trustedFormPage.waitForLoadState('networkidle');
+
+    const trustedFormIds = await backdateTabs(background, ['/untouched-form'], 120000);
+    const trustedFormTabId = trustedFormIds['/untouched-form'] ?? null;
+
+    await activateHelperTab(background);
+    await new Promise(r => setTimeout(r, 400));
+
+    await triggerSweep(helperPage);
+    await new Promise(r => setTimeout(r, 1000));
+
+    const trustedFormTabStatus = await background.evaluate(async (targetId) => {
+      const tabs = await chrome.tabs.query({});
+      return { exists: tabs.some(t => t.id === targetId) };
+    }, trustedFormTabId);
+
+    assert.strictEqual(trustedFormTabStatus.exists, false, 'A trusted domain closes a tab the tier alone would only suspend');
+
+    const trustedFormRecord = (await helperPage.evaluate(async () => {
+      const { getArchivedTabs } = await import(chrome.runtime.getURL('src/storage/db.js'));
+      return await getArchivedTabs({ limit: 10 });
+    })).find(r => r.url.includes('/untouched-form'));
+
+    assert.ok(trustedFormRecord, 'Trusted-domain closed record must exist');
+    assert.strictEqual(trustedFormRecord.status, 'archived', 'Trusted-domain close is recorded as archived, like any other close');
+    assert.match(trustedFormRecord.closureReason, /trusted/i, 'closureReason names the trusted-domain override');
+    console.log('✓ Trusted domain closed a tab the closure tier alone would have suspended');
+
+    const trustedDirtyPage = await context.newPage();
+    await trustedDirtyPage.goto(`http://localhost:${PORT}/dirty-form`);
+    await trustedDirtyPage.waitForLoadState('networkidle');
+
+    const trustedDirtyIds = await backdateTabs(background, ['/dirty-form'], 120000);
+    const trustedDirtyTabId = trustedDirtyIds['/dirty-form'] ?? null;
+
+    await activateHelperTab(background);
+    await new Promise(r => setTimeout(r, 400));
+
+    await triggerSweep(helperPage);
+    await new Promise(r => setTimeout(r, 1000));
+
+    const trustedDirtyTabStatus = await background.evaluate(async (targetId) => {
+      const tabs = await chrome.tabs.query({});
+      return { exists: tabs.some(t => t.id === targetId) };
+    }, trustedDirtyTabId);
+
+    assert.strictEqual(trustedDirtyTabStatus.exists, true, 'Unsaved work is kept open even on a trusted domain');
+    console.log('✓ Trusted domain still keeps a tab with unsaved work open');
+
+    await trustedDirtyPage.close();
+
     // --- Test 5: "Closed today" lists the article TabSum closed in Test 2 ---
     console.log('\n--- Test 5: Knowledge Hub "Closed today" ---');
     await hubPage.reload();
@@ -512,7 +578,8 @@ async function runHybridTests() {
       const curr = await getSettings();
       await saveSettings({
         closeRequiresAiSummary: true,
-        excludedDomains: (curr.excludedDomains || []).filter(d => d !== 'localhost')
+        excludedDomains: (curr.excludedDomains || []).filter(d => d !== 'localhost'),
+        alwaysCloseDomains: (curr.alwaysCloseDomains || []).filter(d => d !== 'localhost')
       });
     });
     const gatedPage = await context.newPage();

@@ -44,7 +44,9 @@ const {
   markLeftOpen,
   markStaysSuspended,
   recordCapture,
-  fadeExpiredTabs
+  fadeExpiredTabs,
+  getSettings,
+  setDomainList
 } = await import('../src/storage/db.js');
 
 // Test 1: favorites and storage estimate (the count-based quota is gone; fading replaced it)
@@ -310,6 +312,16 @@ await softDeleteTab('f-tomb');
 await fadeExpiredTabs(fade);
 assert.ok(await restoreDeletedTab('f-tomb'), 'A soft-deleted expired note can still be restored after a fade pass');
 console.log('✓ Fading skips tombstones');
+
+// Test 15: setDomainList keeps the whitelist and the trusted list mutually exclusive
+console.log('Testing setDomainList...');
+await setDomainList('a.com', 'alwaysCloseDomains');
+assert.ok((await getSettings()).alwaysCloseDomains.includes('a.com'), 'a.com is on the trusted list');
+await setDomainList('a.com', 'excludedDomains');
+const afterSwitch = await getSettings();
+assert.ok(afterSwitch.excludedDomains.includes('a.com'), 'a.com moved to the whitelist');
+assert.ok(!afterSwitch.alwaysCloseDomains.includes('a.com'), 'a.com is off the trusted list');
+console.log('✓ setDomainList mutual exclusion verified');
 
 await clearAllHistory();
 console.log('--- Storage Unit Tests Passed Successfully! ---');

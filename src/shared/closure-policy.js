@@ -34,11 +34,11 @@ export function originPatternFor(url) {
   }
 }
 
-function isExcludedDomain(domain, excludedDomains = []) {
+export function matchesDomainList(domain, list = []) {
   const d = String(domain || '').toLowerCase();
   if (!d) return false;
-  return excludedDomains.some((ex) => {
-    const e = String(ex).toLowerCase();
+  return list.some((entry) => {
+    const e = String(entry).toLowerCase();
     return d === e || d.endsWith('.' + e);
   });
 }
@@ -65,7 +65,7 @@ export function decideSweepAction(tab, ctx = {}) {
   if (tab.active) return skip('active tab');
   if (settings.ignorePinnedTabs !== false && tab.pinned) return skip('pinned tab');
   if (tab.audible) return skip('playing audio');
-  if (isExcludedDomain(domain, settings.excludedDomains)) return skip('excluded domain');
+  if (matchesDomainList(domain, settings.excludedDomains)) return skip('excluded domain');
 
   const timeoutMs = (settings.timeoutMinutes || 60) * 60 * 1000;
   const idleDuration = now - (lastActive ?? now);
@@ -150,20 +150,27 @@ export function canCloseWith(summarySource, settings = {}) {
  * Stage 2b: close the tab, or suspend it and keep it in the strip?
  *
  * Note: a page with unsaved work never reaches here - the sweep aborts before summarizing,
- * so no record is written at all. This decides only between close and suspend.
+ * so no record is written at all. This decides only between close and suspend. In hybrid
+ * mode a trusted domain closes regardless of tier; unsaved work still never reaches here.
  *
  * Returns { action: 'close' | 'suspend', reason }.
  */
-export function decideClosure({ closureTier, summarySource, settings = {} } = {}) {
+export function decideClosure({ closureTier, summarySource, domain, settings = {} } = {}) {
   let close;
+  let reason = '';
   if (settings.archiveMode === 'close') close = true;
   else if (settings.archiveMode === 'discard') close = false;
-  else close = closureTier === 'safe_to_close'; // 'hybrid' (default)
+  else { // 'hybrid' (default)
+    const trusted = matchesDomainList(domain, settings.alwaysCloseDomains);
+    close = closureTier === 'safe_to_close' || trusted;
+    // Only credit the list when it's the reason the tier alone wouldn't have closed.
+    if (trusted && closureTier !== 'safe_to_close') reason = 'Closed: trusted domain';
+  }
 
   if (close && !canCloseWith(summarySource, settings)) {
     return { action: 'suspend', reason: 'Suspended instead of closed: no AI summary available' };
   }
-  return { action: close ? 'close' : 'suspend', reason: '' };
+  return { action: close ? 'close' : 'suspend', reason };
 }
 
 /**
