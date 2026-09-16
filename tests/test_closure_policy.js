@@ -139,6 +139,38 @@ assert.ok(!canCloseWith('heuristic', settings), 'heuristic summaries may not clo
 assert.ok(!canCloseWith(undefined, settings), 'a missing source may not close a tab');
 console.log('✓ Archive modes and the AI-summary gate verified');
 
+// --- Trusted domains override the tier, not the other gates --------------
+console.log('Testing trusted-domain override...');
+const trusted = { ...settings, alwaysCloseDomains: ['example.com'] };
+const trustedVerdict = decideClosure({ closureTier: 'suspend_only', summarySource: ai, domain: 'example.com', settings: trusted });
+assert.strictEqual(trustedVerdict.action, 'close', 'a trusted domain closes despite a suspend_only tier');
+assert.match(trustedVerdict.reason, /trusted/i, 'the record explains the list, not the tier, made the call');
+
+assert.strictEqual(
+  decideClosure({ closureTier: 'suspend_only', summarySource: ai, domain: 'docs.example.com', settings: trusted }).action,
+  'close', 'a subdomain of a trusted domain also closes');
+assert.strictEqual(
+  decideClosure({ closureTier: 'suspend_only', summarySource: ai, domain: 'notexample.com', settings: trusted }).action,
+  'suspend', 'a suffix lookalike is not trusted');
+
+assert.strictEqual(
+  decideClosure({ closureTier: 'suspend_only', summarySource: ai, domain: 'example.com', settings: { ...trusted, archiveMode: 'discard' } }).action,
+  'suspend', 'discard mode never closes, trusted domain or not');
+
+const trustedNoAi = decideClosure({ closureTier: 'suspend_only', summarySource: 'heuristic', domain: 'example.com', settings: trusted });
+assert.strictEqual(trustedNoAi.action, 'suspend', 'the AI-summary gate still applies to a trusted domain');
+assert.match(trustedNoAi.reason, /no AI summary/, 'and the gate reason wins over the trusted one');
+console.log('✓ Trusted-domain override verified');
+
+// Whitelist wins: it short-circuits in stage 1, before a trusted-domain close ever gets decided
+assert.strictEqual(
+  sweep(tab(), {
+    domain: 'example.com',
+    settings: { ...settings, excludedDomains: ['example.com'], alwaysCloseDomains: ['example.com'] }
+  }).action,
+  'skip', 'a domain on both lists is skipped: whitelist wins');
+console.log('✓ Whitelist-over-trusted precedence verified');
+
 assert.ok(isScriptableUrl('https://example.com'), 'https is scriptable');
 assert.ok(!isScriptableUrl(''), 'an empty url is not scriptable');
 assert.ok(!isScriptableUrl(null), 'a missing url is not scriptable');

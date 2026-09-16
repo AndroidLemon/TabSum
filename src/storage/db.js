@@ -528,6 +528,7 @@ export const DEFAULT_SETTINGS = {
     'spotify.com',
     'netflix.com'
   ],
+  alwaysCloseDomains: [],
   closeRequiresAiSummary: true, // without an AI-written summary, suspend instead of closing
   fadeUnopenedDays: 30, // unstarred, never-reopened notes are deleted this long after capture (0 = never)
   fadeReopenedDays: 7 // unstarred reopened notes are deleted this long after the last reopen (0 = never)
@@ -543,6 +544,17 @@ export async function saveSettings(settings) {
   const updated = Object.assign({}, current, settings);
   await chrome.storage.local.set({ tabsum_settings: updated });
   return updated;
+}
+
+// Put domain on one list and take it off the other; the two are mutually exclusive.
+// ponytail: read-modify-write like saveSettings; two writers inside one storage round trip would need a queue.
+export async function setDomainList(domain, listKey) {
+  const other = listKey === 'excludedDomains' ? 'alwaysCloseDomains' : 'excludedDomains';
+  const s = await getSettings();
+  return saveSettings({
+    [listKey]: [...new Set([...(s[listKey] || []), domain])],
+    [other]: (s[other] || []).filter((d) => d !== domain)
+  });
 }
 
 export function extractDomain(url) {

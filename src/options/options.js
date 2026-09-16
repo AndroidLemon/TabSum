@@ -2,7 +2,7 @@
  * TabSum - Settings & Permissions Controller
  */
 
-import { getSettings, saveSettings, getArchivedTabs, saveArchivedTab, getStorageEstimate, clearAllHistory } from '../storage/db.js';
+import { getSettings, saveSettings, setDomainList, getArchivedTabs, saveArchivedTab, getStorageEstimate, clearAllHistory } from '../storage/db.js';
 import { escapeHtml } from '../shared/html.js';
 import { exportToMarkdown, exportToJSON, triggerDownload } from '../shared/export.js';
 
@@ -35,7 +35,7 @@ function populateForm(settings) {
 
   toggleApiKeyRow(settings.aiProvider === 'gemini-api');
   toggleLocalLlmRows(settings.aiProvider === 'openai-compatible');
-  renderDomainChips(settings.excludedDomains || []);
+  renderAllChips();
 }
 
 function setupListeners() {
@@ -116,23 +116,8 @@ function setupListeners() {
     showToast('API key saved locally');
   });
 
-  document.getElementById('add-domain-btn').addEventListener('click', async () => {
-    const input = document.getElementById('new-domain-input');
-    const domain = input.value.trim().toLowerCase()
-      .replace(/^https?:\/\//, '')
-      .replace(/^www\./, '')
-      .replace(/\/.*$/, '');
-    if (!domain) return;
-
-    if (!currentSettings.excludedDomains) currentSettings.excludedDomains = [];
-    if (!currentSettings.excludedDomains.includes(domain)) {
-      currentSettings.excludedDomains.push(domain);
-      await saveSettings(currentSettings);
-      renderDomainChips(currentSettings.excludedDomains);
-      input.value = '';
-      showToast(`Added ${domain} to whitelist`);
-    }
-  });
+  bindDomainList({ key: 'excludedDomains', inputId: 'new-domain-input', btnId: 'add-domain-btn' });
+  bindDomainList({ key: 'alwaysCloseDomains', inputId: 'new-trusted-input', btnId: 'add-trusted-btn' });
 
   document.getElementById('export-json-btn').addEventListener('click', async () => {
     const tabs = await getArchivedTabs({ limit: Infinity, includeText: true });
@@ -276,11 +261,15 @@ function toggleApiKeyRow(show) {
   document.getElementById('api-key-row').classList.toggle('hidden', !show);
 }
 
-function renderDomainChips(domains) {
-  const container = document.getElementById('domain-chips');
+function renderAllChips() {
+  renderDomainChips(document.getElementById('domain-chips'), 'excludedDomains');
+  renderDomainChips(document.getElementById('trusted-chips'), 'alwaysCloseDomains');
+}
+
+function renderDomainChips(container, key) {
   container.innerHTML = '';
 
-  for (const domain of domains) {
+  for (const domain of currentSettings[key] || []) {
     const chip = document.createElement('div');
     chip.className = 'domain-chip';
     chip.innerHTML = `
@@ -289,14 +278,31 @@ function renderDomainChips(domains) {
     `;
 
     chip.querySelector('.chip-remove-btn').addEventListener('click', async () => {
-      currentSettings.excludedDomains = currentSettings.excludedDomains.filter(d => d !== domain);
-      await saveSettings(currentSettings);
-      renderDomainChips(currentSettings.excludedDomains);
+      currentSettings = await saveSettings({ [key]: (currentSettings[key] || []).filter((d) => d !== domain) });
+      renderAllChips();
       showToast(`Removed ${domain}`);
     });
 
     container.appendChild(chip);
   }
+}
+
+// Add handler shared by the whitelist and the trusted-sites sections; the two lists are
+// mutually exclusive (setDomainList enforces it), so a write to one always refreshes both.
+function bindDomainList({ key, inputId, btnId }) {
+  document.getElementById(btnId).addEventListener('click', async () => {
+    const input = document.getElementById(inputId);
+    const domain = input.value.trim().toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .replace(/^www\./, '')
+      .replace(/\/.*$/, '');
+    if (!domain) return;
+
+    currentSettings = await setDomainList(domain, key);
+    renderAllChips();
+    input.value = '';
+    showToast(key === 'excludedDomains' ? `Added ${domain} to whitelist` : `Added ${domain} to trusted sites`);
+  });
 }
 
 function showToast(message) {
@@ -307,3 +313,10 @@ function showToast(message) {
     toast.classList.add('hidden');
   }, 2400);
 }
+
+// Any write from elsewhere (the tab context menu) refreshes the cache the handlers save from.
+chrome.storage.onChanged.addListener(async (changes, area) => {
+  if (area !== 'local' || !changes.tabsum_settings) return;
+  currentSettings = await getSettings();
+  renderAllChips();
+});

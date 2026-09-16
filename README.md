@@ -250,7 +250,7 @@ Navigate to the TabSum settings by right-clicking the extension icon and selecti
 | **Only Close Tabs With an AI Summary** | `Enabled` | Tabs are only closed when an AI tier wrote the summary; otherwise they are suspended. |
 | **Inactivity Threshold** | `60 minutes` | Inactive time before a background tab is eligible (15m, 30m, 1h, 2h, 4h, 24h). Time away from the computer doesn't count. |
 | **Ignore Pinned Tabs** | `Enabled` | Pinned tabs are never suspended or closed. |
-| **Domain Whitelist** | *Default list* | Specific domains and subdomains where TabSum will never touch tabs (`docs.google.com`, `github.com`, etc.). |
+| **Domain Whitelist** | *Default list* | Specific domains and subdomains where TabSum will never touch tabs (`docs.google.com`, `github.com`, etc.). Trusted Sites is the mirror: domains closed once summarized even when the safety checks would only suspend them, in Smart Hybrid mode. Set either list here or via right-click on a tab. |
 | **Notes Fade After** | `30 / 7 days` | Unstarred notes are deleted this many days after capture (never reopened) / after the last reopen. 0 = never. |
 | **AI Provider** | `Auto` | **Auto** uses Chrome's on-device model when it's downloaded, else offline heuristics. Or pick Gemini (cloud, your key) or a local OpenAI-compatible server (URL + model + optional key). |
 

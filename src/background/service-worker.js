@@ -17,7 +17,8 @@ import {
   getSettings,
   extractDomain,
   getStats,
-  getArchivedTabs
+  getArchivedTabs,
+  setDomainList
 } from '../storage/db.js';
 import { summarizeContent } from '../ai/summarizer.js';
 import {
@@ -54,6 +55,16 @@ chrome.runtime.onInstalled.addListener(async () => {
   } catch (err) {
     console.warn('[TabSum] Could not set panel behavior:', err);
   }
+
+  // removeAll first: onInstalled also fires on update, and create() rejects a duplicate id.
+  // ponytail: both items always show, even on a domain already on that list. Upgrade path:
+  // chrome.contextMenus.onShown to relabel/hide per-tab before the menu opens.
+  // Explicit parent, rather than letting Chrome auto-nest under the manifest name: that name
+  // contains an '&', which the auto-generated submenu eats as a mnemonic.
+  await chrome.contextMenus.removeAll();
+  chrome.contextMenus.create({ id: 'tabsum', title: 'TabSum', contexts: ['tab'] });
+  chrome.contextMenus.create({ id: 'excludedDomains', parentId: 'tabsum', title: 'Never archive this site', contexts: ['tab'] });
+  chrome.contextMenus.create({ id: 'alwaysCloseDomains', parentId: 'tabsum', title: 'Always close this site', contexts: ['tab'] });
 
   await initialize();
 });
@@ -468,7 +479,12 @@ async function processTabArchival(tab, settings, lastActiveTime) {
     // 5. Classify what the extractor counted, then decide close vs suspend. Both rules live
     //    in closure-policy.js; this function only carries them out.
     const safety = classifyClosureSafety({ ...extracted.closureTelemetry, wordCount: extracted.wordCount });
-    const closure = decideClosure({ closureTier: safety.tier, summarySource: summary.source, settings });
+    const closure = decideClosure({
+      closureTier: safety.tier,
+      summarySource: summary.source,
+      domain: extracted.domain || extractDomain(tab.url),
+      settings
+    });
     const shouldClose = closure.action === 'close';
     const closureReason = closure.reason || safety.reason;
 
@@ -594,6 +610,18 @@ async function handleCommand(command) {
 }
 
 chrome.commands.onCommand.addListener(handleCommand);
+
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  const domain = extractDomain(tab?.url);
+  if (!domain || !/^https?:/i.test(tab.url)) return; // only web origins belong on a domain list
+  await setDomainList(domain, info.menuItemId);
+  chrome.notifications.create({
+    type: 'basic',
+    iconUrl: chrome.runtime.getURL('src/assets/icons/icon-128.png'),
+    title: 'TabSum',
+    message: info.menuItemId === 'excludedDomains' ? `${domain} will never be archived` : `${domain} will always be closed`
+  });
+});
 
 /**
  * Handle runtime messages from UI surfaces
