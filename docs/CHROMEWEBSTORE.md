@@ -96,10 +96,11 @@ https://github.com/AndroidLemon/TabSum/blob/main/PRIVACY.md
 ## 4. Assets Checklist
 
 - [x] Icon 128×128 PNG (`src/assets/icons/icon-128.png`)
-- [ ] Screenshots, 1280×800 or 640×400, at least one. Suggested: side panel with cards, full-page view, Options, a summarized card expanded.
-- [ ] Small promo tile, 440×280
+- [x] Screenshots, 1280×800, five: full notebook, a summarized card expanded (reader view), a tag filter narrowing results, a composited side-panel view, and Options (`docs/store/01-notebook.png`, `docs/store/02-card-expanded.png`, `docs/store/03-search-filter.png`, `docs/store/04-side-panel.png`, `docs/store/05-options.png`). Regenerate with `npm run assets:store` (see `tests/store_assets.js`).
+- [x] Small promo tile, 440×280 (`docs/store/promo-440x280.png`)
 - [x] Privacy policy URL (`PRIVACY.md`, see section 3)
 - [x] Upload zip: `npm run package` → `dist/tabsum-<version>.zip` (manifest, `src/`, `LICENSE` only)
+- Demo GIFs (not a dashboard requirement, but useful for the listing copy or a README): `docs/store/demo-notebook.gif`, `docs/store/demo-keyboard.gif`.
 
 ---
 
