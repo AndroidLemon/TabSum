@@ -8,6 +8,8 @@
 
 TabSum is a Chrome extension that watches your background tabs. When one has sat untouched for an hour, TabSum reads the article text, writes a short summary, saves it to a searchable local notebook, and then closes or suspends the tab. Anything it closes can be reopened with one click. Nothing leaves your machine unless you point it at a summarizer of your own.
 
+![Searching the notebook, filtering by tag, opening the reader view, and starring a note](docs/store/demo-notebook.gif)
+
 ## Why I built it
 
 Tab hoarding is a working-memory problem. Every open tab is a thought you have not finished with, so closing it feels like losing it, and the bar fills up with favicon slivers. Tab suspenders like The Great Suspender and Chrome's memory saver free the RAM but leave the clutter, and neither leaves any record of what you had open.
@@ -25,6 +27,10 @@ The bet behind TabSum is that most of those tabs are worth a paragraph, not a sl
 
 Closed tabs collect in a **Closed today** list at the top of the notebook. There are no per-tab notifications.
 
+![The notebook in the side panel next to an article](docs/store/04-side-panel.png)
+
+*The notebook at side-panel width. This image is a composite: Playwright cannot capture Chrome's own side panel, so the script renders the same page at panel width beside a sample article.*
+
 ## Features
 
 ### Archival modes
@@ -36,6 +42,8 @@ Smart Hybrid is the default. Two other modes are available under Options:
 - **Auto-Close All.** Closes every idle tab unless it has unsaved input.
 
 **Only Close Tabs With an AI Summary** is on by default. With only the offline heuristic summary available, the tab is suspended instead of closed.
+
+![Options page showing the inactivity threshold and the three archival modes](docs/store/05-options.png)
 
 ### Safety checks
 
@@ -68,6 +76,8 @@ If the chosen tier is unavailable, errors, or times out (20 seconds for cloud an
 
 The side panel and the full view are one page (`src/app/`), so every feature works in both. At side-panel width it is a single column of cards with a **Filters** drawer. In a wide tab it is a persistent sidebar and a multi-column grid. The side panel adds **Archive Current Tab** and **Open full view**, and closes itself when you open the full view.
 
+![The full-page notebook with a sidebar of tags and a grid of summary cards](docs/store/01-notebook.png)
+
 - **Search** covers titles, URLs, summaries, tags, and the saved page text, with matches highlighted on the cards.
 - **Inbox, Reopened, and fading.** The side panel opens on the Inbox: captures you have not dealt with. Reopening a tab moves its note to Reopened, still searchable. Unstarred notes delete themselves 30 days after capture if never reopened, or 7 days after the last reopen. Both are configurable, and 0 means never. Notes close to fading show a `Fades in Nd` chip. Star a note to keep it forever. Capturing the same page again puts it back in the Inbox with a fresh clock.
 - **Undo.** Deleting a card shows a toast with a 5-second Undo button. Deleted notes are purged an hour later.
@@ -77,6 +87,10 @@ The side panel and the full view are one page (`src/app/`), so every feature wor
 - **Reader view.** The saved page text in a `<dialog>` with reading typography. Escape or a click outside closes it.
 - **Density.** Comfortable cards or a compact list. The choice is remembered.
 - **In-place restore.** Restoring a note first checks whether that URL is already open in any window, and switches to it rather than opening a duplicate.
+
+| Filtered by tag | Reader view |
+| :---: | :---: |
+| ![Notebook filtered to the frontend tag](docs/store/03-search-filter.png) | ![Reader view of a saved article](docs/store/02-card-expanded.png) |
 
 ### Export
 
@@ -94,6 +108,8 @@ The side panel and the full view are one page (`src/app/`), so every feature wor
 | `Enter` | Reopen the selected tab |
 | `/` | Focus search |
 | `Escape` | Clear search, or close the reader view |
+
+![Moving between cards with j and k, reopening a tab with Enter, and focusing search with slash](docs/store/demo-keyboard.gif)
 
 ## Install
 
@@ -207,6 +223,8 @@ npm run test:all       # unit + browser
 The Playwright suites open a real Chrome window by default. `TABSUM_HEADLESS=1` runs them with no window. Headless needs Playwright's `chromium` channel, because the default headless shell cannot load extensions. `extensionLaunchOptions()` in `tests/helpers/test-extension.js` handles that. If a suite behaves differently headless, `TABSUM_OFFSCREEN=1` parks a real window off-screen instead.
 
 The Playwright suites load a temporary copy of the extension that adds `localhost` and Wikipedia host permissions, so the shipped manifest does not need them.
+
+The screenshots and GIFs in this README and on the store listing are generated, not hand-captured. `TABSUM_HEADLESS=1 npm run assets:store` seeds a throwaway profile with sample notes and writes everything to `docs/store/`. The GIF step needs `ffmpeg` on your `PATH`.
 
 ## License
 
